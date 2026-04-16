@@ -1,0 +1,1023 @@
+/******************************************************************************
+ * Copyright (C) 2008 Low Heng Sin                                            *
+ * Copyright (C) 2008 Idalica Corporation                                     *
+ * This program is free software; you can redistribute it and/or modify it    *
+ * under the terms version 2 of the GNU General Public License as published   *
+ * by the Free Software Foundation. This program is distributed in the hope   *
+ * that it will be useful, but WITHOUT ANY WARRANTY; without even the implied *
+ * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.           *
+ * See the GNU General Public License for more details.                       *
+ * You should have received a copy of the GNU General Public License along    *
+ * with this program; if not, write to the Free Software Foundation, Inc.,    *
+ * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.                     *
+ *****************************************************************************/
+package tw.idempiere.form;
+
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.logging.Level;
+
+import org.adempiere.webui.LayoutUtils;
+import org.adempiere.webui.apps.AEnv;
+import org.adempiere.webui.component.Button;
+import org.adempiere.webui.component.Grid;
+import org.adempiere.webui.component.Label;
+import org.adempiere.webui.component.ListHeader;
+import org.adempiere.webui.component.ListItem;
+import org.adempiere.webui.component.ListModelTable;
+import org.adempiere.webui.component.Listbox;
+import org.adempiere.webui.component.Row;
+import org.adempiere.webui.component.Rows;
+import org.adempiere.webui.component.Textbox;
+import org.adempiere.webui.component.WListItemRenderer;
+import org.adempiere.webui.component.WListbox;
+import org.adempiere.webui.component.Window;
+import org.adempiere.webui.editor.WSearchEditor;
+import org.adempiere.webui.panel.ADForm;
+import org.adempiere.webui.panel.StatusBarPanel;
+import org.adempiere.webui.session.SessionManager;
+import org.adempiere.webui.theme.ThemeManager;
+import org.adempiere.webui.util.ZKUpdateUtil;
+import org.adempiere.webui.window.FDialog;
+import org.compiere.model.MBPartner;
+import org.compiere.model.MColumn;
+import org.compiere.model.MLookup;
+import org.compiere.model.MLookupFactory;
+import org.compiere.model.MOrder;
+import org.compiere.model.MProduction;
+import org.compiere.model.MQuery;
+import org.compiere.model.MRefList;
+import org.compiere.model.MRole;
+import org.compiere.model.MSysConfig;
+import org.compiere.model.MUser;
+import org.compiere.model.MWorkflowAbstractMessage;
+import org.compiere.model.PO;
+import org.compiere.model.Query;
+import org.compiere.util.CLogger;
+import org.compiere.util.DB;
+import org.compiere.util.DisplayType;
+import org.compiere.util.Env;
+import org.compiere.util.Msg;
+import org.compiere.util.Trx;
+import org.compiere.util.ValueNamePair;
+import org.compiere.wf.MWFActivity;
+import org.compiere.wf.MWFNode;
+import org.zkoss.zk.ui.Component;
+import org.zkoss.zk.ui.event.Event;
+import org.zkoss.zk.ui.event.EventListener;
+import org.zkoss.zk.ui.event.Events;
+import org.zkoss.zk.ui.util.Clients;
+import org.zkoss.zul.Borderlayout;
+import org.zkoss.zul.Center;
+import org.zkoss.zul.North;
+import org.zkoss.zul.South;
+import org.zkoss.zul.Div;
+import org.zkoss.zul.Caption;
+import org.zkoss.zul.Groupbox;
+import org.zkoss.zul.Hbox;
+import org.zkoss.zul.Html;
+import org.zkoss.zul.Listitem;
+import org.zkoss.zul.Separator;
+import org.zkoss.zul.Toolbar;
+import org.zkoss.zul.Toolbarbutton;
+import org.zkoss.zul.Vlayout;
+
+public class WWFActivityTG extends ADForm implements EventListener<Event> {
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = -8405802852868437716L;
+	/** Window No */
+	private int m_WindowNo = 0;
+	/** Open Activities */
+	private MWFActivity[] m_activities = null;
+	/** Current Activity */
+	private MWFActivity m_activity = null;
+	/** Current Activity */
+	private int m_index = 0;
+	/** Set Column */
+	private MColumn m_column = null;
+	/** Logger */
+	private static CLogger log = CLogger.getCLogger(WWFActivityTG.class);
+
+	private static final String VERSION = "v2.0";
+
+	//
+	private Label lNode = new Label(Msg.translate(Env.getCtx(), "AD_WF_Node_ID"));
+	private Textbox fNode = new Textbox();
+	private Label lDesctiption = new Label(Msg.translate(Env.getCtx(), "Description"));
+	private Textbox fDescription = new Textbox();
+	private Label lHelp = new Label(Msg.translate(Env.getCtx(), "Help"));
+	private Textbox fHelp = new Textbox();
+	private Label lHistory = new Label(Msg.translate(Env.getCtx(), "Description"));
+	private Html fHistory = new Html();
+	private Label lAnswer = new Label(Msg.getMsg(Env.getCtx(), "Answer"));
+	private Textbox fAnswerText = new Textbox();
+	private Listbox fAnswerList = new Listbox();
+	private Button fAnswerButton = new Button();
+	private Button bZoom = new Button();
+	private Label lTextMsg = new Label(Msg.getMsg(Env.getCtx(), "Comment"));
+	private Textbox fTextMsg = new Textbox();
+	private Button bOK = new Button();
+	private Toolbarbutton bBatchApprove = new Toolbarbutton(); // Batch Approve
+	private WSearchEditor fForward = null; // dynInit
+	private Label lForward = new Label(Msg.getMsg(Env.getCtx(), "Forward"));
+	private Label lOptional = new Label("(" + Msg.translate(Env.getCtx(), "Optional") + ")");
+	private StatusBarPanel statusBar = new StatusBarPanel();
+
+	private ListModelTable model = null;
+	private WListbox listbox = new WListbox();
+
+	private final static String HISTORY_DIV_START_TAG = "<div style='height: 100px; border: 1px solid #7F9DB9;'>";
+
+	public WWFActivityTG() {
+		super();
+		LayoutUtils.addSclass("workflow-activity-form", this);
+	}
+
+	protected void initForm() {
+		loadActivities();
+
+		fAnswerList.setMold("select");
+
+		if (ThemeManager.isUseFontIconForImage())
+			bZoom.setIconSclass("z-icon-Zoom");
+		else
+			bZoom.setImage(ThemeManager.getThemeResource("images/Zoom16.png"));
+		if (ThemeManager.isUseFontIconForImage())
+			bOK.setIconSclass("z-icon-Ok");
+		else
+			bOK.setImage(ThemeManager.getThemeResource("images/Ok16.png"));
+
+		bBatchApprove.setLabel(Msg.getMsg(Env.getCtx(), "Batch Approve"));
+		bBatchApprove.addEventListener(Events.ON_CLICK, this);
+
+		if (ThemeManager.isUseFontIconForImage())
+			bBatchApprove.setIconSclass("z-icon-Process");
+		else
+			bBatchApprove.setImage(ThemeManager.getThemeResource("images/Process16.png"));
+
+		MLookup lookup = MLookupFactory.get(Env.getCtx(), m_WindowNo,
+				0, 10443, DisplayType.Search);
+		fForward = new WSearchEditor(lookup, Msg.translate(
+				Env.getCtx(), "AD_User_ID"), "", true, false, true);
+
+		init();
+		display(-1);
+	}
+
+	private void init() {
+		// Main Layout
+		Borderlayout layout = new Borderlayout();
+		ZKUpdateUtil.setWidth(layout, "100%");
+		ZKUpdateUtil.setHeight(layout, "100%");
+		layout.setStyle("background-color: transparent; position: absolute;");
+
+		// --- North Region (Toolbar + List) ---
+		North north = new North();
+		north.setSplittable(true);
+		ZKUpdateUtil.setHeight(north, "30%");
+		north.setStyle("background-color: transparent");
+
+		Vlayout northLayout = new Vlayout();
+		northLayout.setVflex("1");
+		northLayout.setHflex("1");
+
+		// Toolbar
+		Toolbar toolbar = new Toolbar();
+		toolbar.setHflex("1");
+		toolbar.setHeight("36px");
+		// Version Label in Toolbar
+		Label lVersionToolbar = new Label(VERSION);
+		lVersionToolbar.setStyle("float: right; margin-top: 8px; margin-right: 10px; font-size: 10px; color: #888;");
+		toolbar.appendChild(lVersionToolbar);
+
+		// Program Name
+		Label lProgramName = new Label(Msg.getMsg(Env.getCtx(), "Nexus Approval Hub"));
+		lProgramName.setStyle(
+				"float: right; margin-top: 8px; margin-right: 8px; font-size: 12px; font-weight: bold; color: #555;");
+		toolbar.appendChild(lProgramName);
+
+		Label space = new Label(" ");
+		toolbar.appendChild(space);
+		toolbar.appendChild(bBatchApprove);
+
+		// Motto
+		Label lMotto = new Label(Msg.getMsg(Env.getCtx(), "Decisions Today Shape Tomorrow"));
+		lMotto.setStyle("margin-left: 15px; font-style: italic; color: #777; vertical-align: middle;");
+		toolbar.appendChild(lMotto);
+
+		northLayout.appendChild(toolbar);
+
+		// Listbox
+		ZKUpdateUtil.setVflex(listbox, "1");
+		ZKUpdateUtil.setHflex(listbox, "1");
+		northLayout.appendChild(listbox);
+
+		north.appendChild(northLayout);
+		// Set Header Background
+		north.setStyle("background-image: url(data:image/jpeg;base64," + WWFActivityImage.HEADER_BG_BASE64
+				+ "); background-size: cover; background-repeat: no-repeat; background-position: center; border-bottom: 1px solid #ccc;");
+		layout.appendChild(north);
+		listbox.addEventListener(Events.ON_SELECT, this);
+
+		// --- Center Region (Activity Details & Actions) ---
+		Center center = new Center();
+		center.setAutoscroll(true);
+		center.setStyle("background-color: transparent");
+
+		Vlayout centerLayout = new Vlayout();
+		centerLayout.setSpacing("10px");
+		centerLayout.setStyle("padding: 10px;");
+		ZKUpdateUtil.setWidth(centerLayout, "100%");
+
+		// Group 1: Workflow Activity Information
+		Groupbox gbInfo = new Groupbox();
+		gbInfo.appendChild(new Caption(Msg.translate(Env.getCtx(), "Workflow")));
+		gbInfo.setMold("3d");
+
+		Grid gridInfo = new Grid();
+		gridInfo.makeNoStrip();
+		gridInfo.setOddRowSclass("even");
+		ZKUpdateUtil.setWidth(gridInfo, "100%");
+
+		Rows rowsInfo = new Rows();
+		gridInfo.appendChild(rowsInfo);
+
+		// Row 1: Node + Version
+		Row rowInfo1 = new Row();
+		rowInfo1.appendChild(lNode);
+		rowInfo1.appendChild(fNode);
+		ZKUpdateUtil.setHflex(fNode, "true");
+		fNode.setReadonly(true);
+
+		rowInfo1.appendChild(new Label()); // Spacer
+		rowsInfo.appendChild(rowInfo1);
+
+		// Row 2: Description
+		Row rowInfo2 = new Row();
+		rowInfo2.appendChild(lDesctiption);
+		rowInfo2.appendChild(fDescription);
+		ZKUpdateUtil.setHflex(fDescription, "true");
+		fDescription.setMultiline(true);
+		fDescription.setRows(2);
+		fDescription.setReadonly(true);
+		rowInfo2.appendChild(new Label());
+		rowsInfo.appendChild(rowInfo2);
+
+		// Row 3: Help
+		Row rowInfo3 = new Row();
+		rowInfo3.appendChild(lHelp);
+		rowInfo3.appendChild(fHelp);
+		ZKUpdateUtil.setHflex(fHelp, "true");
+		fHelp.setMultiline(true);
+		fHelp.setRows(2);
+		fHelp.setReadonly(true);
+		rowInfo3.appendChild(new Label());
+		rowsInfo.appendChild(rowInfo3);
+
+		gbInfo.appendChild(gridInfo);
+		centerLayout.appendChild(gbInfo);
+
+		// Group 2: History & Message
+		Groupbox gbHistory = new Groupbox();
+		gbHistory.appendChild(new Caption("Abstract Message"));
+		gbHistory.setMold("3d");
+
+		ZKUpdateUtil.setWidth(fHistory, "100%");
+		ZKUpdateUtil.setHeight(fHistory, "150px");
+		Div divHistory = new Div();
+		divHistory.setStyle("overflow: auto; border: 1px solid #ccc; background: white; padding: 5px;");
+		divHistory.setHeight("150px");
+		divHistory.appendChild(fHistory);
+		gbHistory.appendChild(divHistory);
+
+		centerLayout.appendChild(gbHistory);
+
+		// Group 3: Actions
+		Groupbox gbAction = new Groupbox();
+		gbAction.appendChild(new Caption(Msg.translate(Env.getCtx(), "Action")));
+		gbAction.setMold("3d");
+
+		Grid gridAction = new Grid();
+		gridAction.makeNoStrip();
+		gridAction.setOddRowSclass("even");
+		ZKUpdateUtil.setWidth(gridAction, "100%");
+
+		Rows rowsAction = new Rows();
+		gridAction.appendChild(rowsAction);
+
+		// Row 1: Answer
+		Row rowAction1 = new Row();
+		rowAction1.appendChild(lAnswer);
+		Hbox hboxAnswer = new Hbox();
+		hboxAnswer.setHflex("1");
+		hboxAnswer.setAlign("center");
+		hboxAnswer.appendChild(fAnswerText);
+		ZKUpdateUtil.setHflex(fAnswerText, "1");
+		hboxAnswer.appendChild(fAnswerList); // Listbox mold=select
+		hboxAnswer.appendChild(fAnswerButton);
+		fAnswerButton.setIconSclass("z-icon-Go");
+		fAnswerButton.addEventListener(Events.ON_CLICK, this);
+		hboxAnswer.appendChild(new Separator("vertical"));
+		hboxAnswer.appendChild(bZoom);
+		bZoom.addEventListener(Events.ON_CLICK, this);
+		rowAction1.appendChild(hboxAnswer);
+		rowAction1.appendChild(new Label());
+		rowsAction.appendChild(rowAction1);
+
+		// Row 2: Comment
+		Row rowAction2 = new Row();
+		rowAction2.appendChild(lTextMsg);
+		rowAction2.appendChild(fTextMsg);
+		ZKUpdateUtil.setHflex(fTextMsg, "true");
+		fTextMsg.setMultiline(true);
+		fTextMsg.setRows(2);
+		rowAction2.appendChild(new Label());
+		rowsAction.appendChild(rowAction2);
+
+		// Row 3: Forward & Process
+		Row rowAction3 = new Row();
+		rowAction3.appendChild(lForward);
+		Hbox hboxForward = new Hbox();
+		hboxForward.setHflex("1");
+		hboxForward.setAlign("center");
+		hboxForward.appendChild(fForward.getComponent());
+		hboxForward.appendChild(new Separator("vertical"));
+		hboxForward.appendChild(lOptional);
+		rowAction3.appendChild(hboxForward);
+
+		// Button OK
+		bOK.addEventListener(Events.ON_CLICK, this);
+		// Reset styling just in case
+		bOK.setStyle(null);
+		rowAction3.appendChild(bOK);
+
+		rowsAction.appendChild(rowAction3);
+
+		gbAction.appendChild(gridAction);
+		centerLayout.appendChild(gbAction);
+
+		center.appendChild(centerLayout);
+		layout.appendChild(center);
+
+		// South Region (Status Bar)
+		South south = new South();
+		south.appendChild(statusBar);
+		south.setStyle("background-color: transparent");
+		layout.appendChild(south);
+
+		this.appendChild(layout);
+		this.setStyle("height: 100%; width: 100%; position: absolute;");
+	}
+
+	public void onEvent(Event event) throws Exception {
+		Component comp = event.getTarget();
+		String eventName = event.getName();
+
+		if (eventName.equals(Events.ON_CLICK)) {
+			if (comp == bZoom)
+				cmd_zoom();
+			else if (comp == bOK) {
+				Clients.showBusy(Msg.getMsg(Env.getCtx(), "Processing"));
+				Events.echoEvent("onOK", this, null);
+			} else if (comp == bBatchApprove) {
+				cmd_batchApprove();
+			} else if (comp == fAnswerButton)
+
+				cmd_button();
+		} else if (Events.ON_SELECT.equals(eventName) && comp == listbox) {
+			m_index = listbox.getSelectedIndex();
+			if (m_index >= 0)
+				display(m_index);
+		}
+		// fAnswerList
+		else if (Events.ON_SELECT.equals(eventName) && comp == fAnswerList) {
+			if (fAnswerList.getSelectedItem().getValue().equals("N")
+					&& fTextMsg.getText().length() == 0)
+				Clients.showNotification(
+						Msg.translate(Env.getCtx(), "RejectReasons"), fTextMsg);
+		} else {
+			super.onEvent(event);
+		}
+	}
+
+	/**
+	 * Get active activities count
+	 * 
+	 * @return int
+	 */
+	public int getActivitiesCount() {
+		int count = 0;
+
+		String sql = "SELECT COUNT(*) FROM AD_WF_Activity a "
+				+ "WHERE " + getWhereActivities();
+		int AD_User_ID = Env.getAD_User_ID(Env.getCtx());
+		int AD_Client_ID = Env.getAD_Client_ID(Env.getCtx());
+		MRole role = MRole.get(Env.getCtx(), Env.getAD_Role_ID(Env.getCtx()));
+		sql = role.addAccessSQL(sql, "a", true, false);
+		PreparedStatement pstmt = null;
+		ResultSet rs = null;
+		try {
+			pstmt = DB.prepareStatement(sql, null);
+			pstmt.setInt(1, AD_User_ID);
+			pstmt.setInt(2, AD_User_ID);
+			pstmt.setInt(3, AD_User_ID);
+			pstmt.setInt(4, AD_User_ID);
+			pstmt.setInt(5, AD_User_ID);
+			pstmt.setInt(6, AD_Client_ID);
+			rs = pstmt.executeQuery();
+			if (rs.next()) {
+				count = rs.getInt(1);
+			}
+		} catch (Exception e) {
+			log.log(Level.SEVERE, sql, e);
+		} finally {
+			DB.close(rs, pstmt);
+			rs = null;
+			pstmt = null;
+		}
+
+		return count;
+
+	}
+
+	/**
+	 * Load Activities
+	 * 
+	 * @return int
+	 */
+	public int loadActivities() {
+		long start = System.currentTimeMillis();
+
+		int MAX_ACTIVITIES_IN_LIST = MSysConfig.getIntValue(MSysConfig.MAX_ACTIVITIES_IN_LIST, 200,
+				Env.getAD_Client_ID(Env.getCtx()));
+
+		model = new ListModelTable();
+
+		ArrayList<MWFActivity> list = new ArrayList<MWFActivity>();
+		String sql = "SELECT * FROM AD_WF_Activity a "
+				+ "WHERE " + getWhereActivities()
+				+ " ORDER BY a.Priority DESC, Created";
+		int AD_User_ID = Env.getAD_User_ID(Env.getCtx());
+		int AD_Client_ID = Env.getAD_Client_ID(Env.getCtx());
+		MRole role = MRole.get(Env.getCtx(), Env.getAD_Role_ID(Env.getCtx()));
+		sql = role.addAccessSQL(sql, "a", true, false);
+		PreparedStatement pstmt = null;
+		ResultSet rs = null;
+		try {
+			pstmt = DB.prepareStatement(sql, null);
+			pstmt.setInt(1, AD_User_ID);
+			pstmt.setInt(2, AD_User_ID);
+			pstmt.setInt(3, AD_User_ID);
+			pstmt.setInt(4, AD_User_ID);
+			pstmt.setInt(5, AD_User_ID);
+			pstmt.setInt(6, AD_Client_ID);
+
+			rs = pstmt.executeQuery();
+			while (rs.next()) {
+				MWFActivity activity = new MWFActivity(Env.getCtx(), rs, null);
+				list.add(activity);
+				List<Object> rowData = new ArrayList<Object>();
+
+				// 1. User/Contact
+				String userName = "";
+				// User 改成 單據 （Table）的 AD_User_ID ，若沒有這個欄位 抓 Createdby
+				PO po = activity.getPO();
+				if (po != null) {
+					int userID = 0;
+					int idx = po.get_ColumnIndex("AD_User_ID");
+					if (idx >= 0) {
+						Object val = po.get_Value(idx);
+						if (val != null && val instanceof Integer)
+							userID = (Integer) val;
+					}
+					if (userID <= 0)
+						userID = po.getCreatedBy();
+
+					if (userID > 0) {
+						MUser user = MUser.get(Env.getCtx(), userID);
+						if (user != null)
+							userName = user.getName();
+					}
+				}
+				if (userName == null || userName.length() == 0) {
+					if (activity.getAD_User_ID() > 0 && activity.getAD_User() != null)
+						userName = activity.getAD_User().getName();
+				}
+				rowData.add(userName);
+
+				// 2. Document Type
+				String docType = "";
+				if (activity.getAD_Table_ID() > 0 && activity.getAD_Table() != null) {
+					docType = activity.getAD_Table().getDescription();
+					if (docType == null || docType.trim().length() == 0)
+						docType = activity.getAD_Table().getName();
+				}
+				rowData.add(docType);
+
+				// 3. Workflow Node
+				rowData.add(activity.getNodeName());
+
+				// 4. Description
+				rowData.add(getDescription(activity));
+
+				// 5. Summary
+				String docSummary = getSummary(activity);
+				if (docSummary != null)
+					rowData.add(docSummary);
+				else
+					rowData.add(activity.getSummary());
+
+				model.add(rowData);
+				if (list.size() > MAX_ACTIVITIES_IN_LIST && MAX_ACTIVITIES_IN_LIST > 0) {
+					log.warning("More then 200 Activities - ignored");
+					break;
+				}
+			}
+		} catch (Exception e) {
+			log.log(Level.SEVERE, sql, e);
+		} finally {
+			DB.close(rs, pstmt);
+			rs = null;
+			pstmt = null;
+		}
+		m_activities = new MWFActivity[list.size()];
+		list.toArray(m_activities);
+		//
+		if (log.isLoggable(Level.FINE))
+			log.fine("#" + m_activities.length
+					+ "(" + (System.currentTimeMillis() - start) + "ms)");
+		m_index = 0;
+
+		String[] columns = new String[] {
+				Msg.translate(Env.getCtx(), "AD_User_ID"),
+				Msg.translate(Env.getCtx(), "DocumentType"),
+				Msg.translate(Env.getCtx(), "AD_WF_Node_ID"),
+				Msg.translate(Env.getCtx(), "Description"),
+				Msg.translate(Env.getCtx(), "Summary") };
+
+		WListItemRenderer renderer = new WListItemRenderer(Arrays.asList(columns));
+		ListHeader header = new ListHeader();
+		ZKUpdateUtil.setWidth(header, null);
+		renderer.setListHeader(0, header);
+		header = new ListHeader();
+		ZKUpdateUtil.setWidth(header, null);
+		renderer.setListHeader(1, header);
+		header = new ListHeader();
+		ZKUpdateUtil.setWidth(header, null);
+		renderer.setListHeader(2, header);
+		header = new ListHeader();
+		ZKUpdateUtil.setWidth(header, null);
+		renderer.setListHeader(3, header);
+		header = new ListHeader();
+		ZKUpdateUtil.setWidth(header, null);
+		renderer.setListHeader(4, header);
+
+		renderer.addTableValueChangeListener(listbox);
+		model.setNoColumns(columns.length);
+		listbox.setModel(model);
+		listbox.setItemRenderer(renderer);
+		listbox.setMultiple(true);
+		listbox.setCheckmark(true);
+		listbox.repaint();
+
+		listbox.setSizedByContent(false);
+
+		return m_activities.length;
+	} // loadActivities
+
+	private String getDescription(MWFActivity activity) {
+		PO po = activity.getPO();
+		String description = null;
+		if (po != null) {
+			int idx = po.get_ColumnIndex("Description");
+			if (idx >= 0) {
+				Object val = po.get_Value(idx);
+				if (val != null)
+					description = val.toString();
+			}
+		}
+		if (description == null || description.trim().length() == 0) {
+			description = activity.getTextMsg();
+		}
+		return description;
+	}
+
+	private String getSummary(MWFActivity activity) {
+		// 1) 工單單號 + 對象 + 三角交易
+		if (activity.getAD_Table_ID() == MProduction.Table_ID) {
+			StringBuilder sb = new StringBuilder();
+			MProduction mo = new MProduction(activity.getCtx(), activity.getRecord_ID(), activity.get_TrxName());
+			sb.append(Msg.getElement(activity.getCtx(), "M_Production_ID")).append(" ");
+			sb.append(mo.getDocumentNo()).append(" ");
+
+			if (mo.getC_OrderLine_ID() > 0 && mo.getC_OrderLine().getC_Order_ID() > 0) {
+				MOrder so = (MOrder) mo.getC_OrderLine().getC_Order();
+				if (so.isDropShip() && so.getDropShip_BPartner_ID() > 0) {
+					sb.append(so.getC_BPartner().getName2()).append(": ");
+					sb.append(so.getDropShip_BPartner().getName()).append(" ");
+				} else {
+					sb.append(so.getC_BPartner().getName()).append(" ");
+				}
+			}
+			return sb.toString();
+		}
+
+		return null;
+	}
+
+	private String getWhereActivities() {
+		final String where = "a.Processed='N' AND a.WFState='OS' "
+				+ " AND (EXISTS (select * from AD_WF_Node wfn where "
+				+ " a.AD_WF_Node_ID = wfn.AD_WF_Node_ID "
+				+ " and  not ( substring(wfn.name,1,8) = '[SYSTEM]' and wfn.action = 'Z' ) ) )"
+
+				+ " AND ("
+				// Owner of Activity
+				+ " a.AD_User_ID=?" // #1
+				// Invoker (if no invoker = all)
+				+ " OR EXISTS (SELECT * FROM AD_WF_Responsible r WHERE a.AD_WF_Responsible_ID=r.AD_WF_Responsible_ID"
+				+ " AND r.ResponsibleType='H' AND COALESCE(r.AD_User_ID,0)=0 AND COALESCE(r.AD_Role_ID,0)=0 AND (a.AD_User_ID=? OR a.AD_User_ID IS NULL))" // #2
+				// Responsible User
+				+ " OR EXISTS (SELECT * FROM AD_WF_Responsible r WHERE a.AD_WF_Responsible_ID=r.AD_WF_Responsible_ID"
+				+ " AND r.ResponsibleType='H' AND r.AD_User_ID=?)" // #3
+				// Responsible Role
+				+ " OR EXISTS (SELECT * FROM AD_WF_Responsible r INNER JOIN AD_User_Roles ur ON (r.AD_Role_ID=ur.AD_Role_ID)"
+				+ " WHERE a.AD_WF_Responsible_ID=r.AD_WF_Responsible_ID AND r.ResponsibleType='R' AND ur.AD_User_ID=? AND ur.isActive = 'Y')" // #4
+				/// * Manual Responsible */
+				+ " OR EXISTS (SELECT * FROM AD_WF_ActivityApprover r "
+				+ " WHERE a.AD_WF_Activity_ID=r.AD_WF_Activity_ID AND r.AD_User_ID=? AND r.isActive = 'Y')"
+				+ ") AND a.AD_Client_ID=?"; // #5
+		return where;
+	}
+
+	/**
+	 * Reset Display
+	 * 
+	 * @param selIndex select index
+	 * @return selected activity
+	 */
+	private MWFActivity resetDisplay(int selIndex) {
+		fAnswerText.setVisible(false);
+		fAnswerList.setVisible(false);
+		fAnswerButton.setVisible(false);
+		if (ThemeManager.isUseFontIconForImage())
+			fAnswerButton.setIconSclass("z-icon-Window");
+		else
+			fAnswerButton.setImage(ThemeManager.getThemeResource("images/mWindow.png"));
+		fTextMsg.setReadonly(!(selIndex >= 0));
+		bZoom.setEnabled(selIndex >= 0);
+		bOK.setEnabled(selIndex >= 0);
+		fForward.setValue(null);
+		fForward.setReadWrite(selIndex >= 0);
+		//
+		statusBar.setStatusDB(String.valueOf(selIndex + 1) + "/" + m_activities.length);
+		m_activity = null;
+		m_column = null;
+		if (m_activities.length > 0) {
+			if (selIndex >= 0 && selIndex < m_activities.length)
+				m_activity = m_activities[selIndex];
+		}
+		// Nothing to show
+		if (m_activity == null) {
+			fNode.setText("");
+			fDescription.setText("");
+			fHelp.setText("");
+			fHistory.setContent(HISTORY_DIV_START_TAG + "&nbsp;</div>");
+			statusBar.setStatusDB("0/0");
+			statusBar.setStatusLine(Msg.getMsg(Env.getCtx(), "WFNoActivities"));
+		}
+		return m_activity;
+	} // resetDisplay
+
+	/**
+	 * Display.
+	 * Fill Editors
+	 */
+	public void display(int index) {
+		if (log.isLoggable(Level.FINE))
+			log.fine("Index=" + index);
+		//
+		m_activity = resetDisplay(index);
+		// Nothing to show
+		if (m_activity == null) {
+			return;
+		}
+		// Display Activity
+		fNode.setText(m_activity.getNodeName());
+		fDescription.setValue(m_activity.getNodeDescription());
+		fHelp.setValue(m_activity.getNodeHelp());
+
+		fHistory.setContent(getDocumentInfoContent());
+		//
+		// fHistory.setContent
+		// (HISTORY_DIV_START_TAG+m_activity.getHistoryHTML()+"</div>");
+
+		// User Actions
+		MWFNode node = m_activity.getNode();
+		if (MWFNode.ACTION_UserChoice.equals(node.getAction())) {
+			if (m_column == null)
+				m_column = node.getColumn();
+			if (m_column != null && m_column.get_ID() != 0) {
+				fAnswerList.removeAllItems();
+				int dt = m_column.getAD_Reference_ID();
+				if (dt == DisplayType.YesNo) {
+					ValueNamePair[] values = MRefList.getList(Env.getCtx(), 319, false); // _YesNo
+					for (int i = 0; i < values.length; i++) {
+						fAnswerList.appendItem(values[i].getName(), values[i].getValue());
+					}
+					fAnswerList.setVisible(true);
+				} else if (dt == DisplayType.List) {
+					ValueNamePair[] values = MRefList.getList(Env.getCtx(), m_column.getAD_Reference_Value_ID(), false);
+					for (int i = 0; i < values.length; i++) {
+						fAnswerList.appendItem(values[i].getName(), values[i].getValue());
+					}
+					fAnswerList.setSelectedIndex(0);
+					fAnswerList.setVisible(true);
+				} else // other display types come here
+				{
+					fAnswerText.setText("");
+					fAnswerText.setVisible(true);
+				}
+			}
+		}
+		// --
+		else if (MWFNode.ACTION_UserWindow.equals(node.getAction())
+				|| MWFNode.ACTION_UserForm.equals(node.getAction())
+				|| MWFNode.ACTION_UserInfo.equals(node.getAction())) {
+			fAnswerButton.setLabel(node.getName());
+			fAnswerButton.setTooltiptext(node.getDescription());
+			fAnswerButton.setVisible(true);
+		} else
+			log.log(Level.SEVERE, "Unknown Node Action: " + node.getAction());
+
+		statusBar.setStatusDB((m_index + 1) + "/" + m_activities.length);
+		statusBar.setStatusLine(Msg.getMsg(Env.getCtx(), "WFActivities"));
+	} // display
+
+	private String getDocumentInfoContent() {
+		// 1. Check for Abstract Message (Highest Priority)
+		MWorkflowAbstractMessage abstractMessage = MWorkflowAbstractMessage.get(Env.getCtx(),
+				m_activity.getAD_Table_ID(), m_activity.getRecord_ID(), null);
+		if (abstractMessage.get_ID() > 0 && abstractMessage.getAbstractMessage() != null) {
+			return HISTORY_DIV_START_TAG + abstractMessage.getAbstractMessage().replaceAll("\n", "<br />") + "</div>";
+		}
+
+		// 2. Check for Table Support TextMsg
+		String tableName = m_activity.getAD_Table().getTableName();
+		String avaiableTableList = MSysConfig.getValue("TABLE_SUPPORT_TEXTMSG",
+				"HR_OvertimeNote,HR_AbsenceNote,M_WorkshopTankConfirm");
+
+		if (avaiableTableList.contains(tableName)) {
+			String sql = "SELECT TextMsg FROM " + tableName + " WHERE " + tableName + "_ID=?";
+			String textMsg = DB.getSQLValueString(null, sql, m_activity.getRecord_ID());
+
+			if (textMsg == null)
+				textMsg = "";
+
+			textMsg += getActivityTextMsg();
+
+			if (textMsg.length() > 0)
+				return HISTORY_DIV_START_TAG + textMsg.replaceAll("\n", "<br />") + "</div>";
+			else
+				return HISTORY_DIV_START_TAG + "</div>";
+		}
+
+		// 3. Special handling for M_Production
+		if ("M_Production".equals(tableName)) {
+			String sql = "SELECT pp_productioninfo_sp(?)";
+			String textMsg = DB.getSQLValueString(null, sql, m_activity.getRecord_ID());
+			if (textMsg != null)
+				return HISTORY_DIV_START_TAG + textMsg.replaceAll("\n", "<br />") + "</div>";
+		}
+
+		// 4. Default History HTML
+		return HISTORY_DIV_START_TAG + m_activity.getHistoryHTML() + "</div>";
+	}
+
+	private String getActivityTextMsg() {
+		// TODO Auto-generated method stub
+		int counter = 0;
+		String info = "";
+		String whereSQl = "exists (select 1 from ad_wf_node xx where AD_WF_Activity.ad_wf_node_id = xx.ad_wf_node_id and action = 'C' ) "
+				+ "and ad_table_id = ? and record_id = ?";
+		List<MWFActivity> list = new Query(m_activity.getCtx(), MWFActivity.Table_Name, whereSQl,
+				m_activity.get_TrxName())
+				.setParameters(new Object[] { m_activity.getAD_Table_ID(), m_activity.getRecord_ID() })
+				.setOrderBy(MWFActivity.COLUMNNAME_AD_WF_Activity_ID)
+				.list();
+
+		for (MWFActivity activity : list) {
+			info += activity.getUpdated().toString().substring(0, 19) + " " + activity.getAD_User().getName() + " Memo:"
+					+ activity.getTextMsg() + "\n";
+			counter++;
+		}
+		if (counter > 0)
+			info = "\n ==相關已簽核內容==\n" + info;
+		return info;
+	}
+
+	/**
+	 * Zoom
+	 */
+	private void cmd_zoom() {
+		if (log.isLoggable(Level.CONFIG))
+			log.config("Activity=" + m_activity);
+		if (m_activity == null)
+			return;
+		AEnv.zoom(m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
+	} // cmd_zoom
+
+	/**
+	 * Answer Button
+	 */
+	private void cmd_button() {
+		if (log.isLoggable(Level.CONFIG))
+			log.config("Activity=" + m_activity);
+		if (m_activity == null)
+			return;
+		//
+		MWFNode node = m_activity.getNode();
+		if (MWFNode.ACTION_UserWindow.equals(node.getAction())) {
+			int AD_Window_ID = node.getAD_Window_ID(); // Explicit Window
+			String ColumnName = m_activity.getPO().get_TableName() + "_ID";
+			int Record_ID = m_activity.getRecord_ID();
+			MQuery query = MQuery.getEqualQuery(ColumnName, Record_ID);
+			boolean IsSOTrx = m_activity.isSOTrx();
+			//
+			log.info("Zoom to AD_Window_ID=" + AD_Window_ID
+					+ " - " + query + " (IsSOTrx=" + IsSOTrx + ")");
+
+			AEnv.zoom(AD_Window_ID, query);
+		} else if (MWFNode.ACTION_UserForm.equals(node.getAction())) {
+			int AD_Form_ID = node.getAD_Form_ID();
+
+			ADForm form = ADForm.openForm(AD_Form_ID);
+			form.setAttribute(Window.MODE_KEY, form.getWindowMode());
+			AEnv.showWindow(form);
+		} else if (MWFNode.ACTION_UserInfo.equals(node.getAction())) {
+			SessionManager.getAppDesktop().openInfo(node.getAD_InfoWindow_ID());
+		} else
+			log.log(Level.SEVERE, "No User Action:" + node.getAction());
+	} // cmd_button
+
+	/**
+	 * Save
+	 */
+	public void onOK() {
+		if (log.isLoggable(Level.CONFIG))
+			log.config("Activity=" + m_activity);
+		if (m_activity == null) {
+			Clients.clearBusy();
+			return;
+		}
+		int AD_User_ID = Env.getAD_User_ID(Env.getCtx());
+		String textMsg = fTextMsg.getValue();
+		//
+		MWFNode node = m_activity.getNode();
+
+		Object forward = fForward.getValue();
+
+		// ensure activity is ran within a transaction - [ 1953628 ]
+		Trx trx = null;
+		try {
+			/**
+			 * 2020-10-29 fixed
+			 */
+			// trx = Trx.get(Trx.createTrxName("FWFA"), true);
+
+			// m_activity.set_TrxName(trx.getTrxName());
+			trx = Trx.get(Trx.createTrxName(m_activity.get_TrxName()), true);
+			trx.setDisplayName(getClass().getName() + "_onOK");
+			if (forward != null) {
+				if (log.isLoggable(Level.CONFIG))
+					log.config("Forward to " + forward);
+				int fw = ((Integer) forward).intValue();
+				if (fw == AD_User_ID || fw == 0) {
+					log.log(Level.SEVERE, "Forward User=" + fw);
+					trx.rollback();
+					trx.close();
+					return;
+				}
+				if (!m_activity.forwardTo(fw, textMsg)) {
+					FDialog.error(m_WindowNo, this, "CannotForward");
+					trx.rollback();
+					trx.close();
+					return;
+				}
+			}
+			// User Choice - Answer
+			else if (MWFNode.ACTION_UserChoice.equals(node.getAction())) {
+				if (m_column == null)
+					m_column = node.getColumn();
+				// Do we have an answer?
+				int dt = m_column.getAD_Reference_ID();
+				String value = fAnswerText.getText();
+				if (dt == DisplayType.YesNo || dt == DisplayType.List) {
+					ListItem li = fAnswerList.getSelectedItem();
+					if (li != null)
+						value = li.getValue().toString();
+				}
+				if (value == null || value.length() == 0) {
+					FDialog.error(m_WindowNo, this, "FillMandatory", Msg.getMsg(Env.getCtx(), "Answer"));
+					trx.rollback();
+					trx.close();
+					return;
+				}
+				//
+				if (log.isLoggable(Level.CONFIG))
+					log.config("Answer=" + value + " - " + textMsg);
+				try {
+					m_activity.setUserChoice(AD_User_ID, value, dt, textMsg);
+				} catch (Exception e) {
+					log.log(Level.SEVERE, node.getName(), e);
+					FDialog.error(m_WindowNo, this, "Error", e.toString());
+					trx.rollback();
+					trx.close();
+					return;
+				}
+			}
+			// User Action
+			else {
+				if (log.isLoggable(Level.CONFIG))
+					log.config("Action=" + node.getAction() + " - " + textMsg);
+				try {
+					// ensure activity is ran within a transaction
+					m_activity.setUserConfirmation(AD_User_ID, textMsg);
+				} catch (Exception e) {
+					log.log(Level.SEVERE, node.getName(), e);
+					FDialog.error(m_WindowNo, this, "Error", e.toString());
+					trx.rollback();
+					trx.close();
+					return;
+				}
+
+			}
+
+			trx.commit();
+		} finally {
+			Clients.clearBusy();
+			if (trx != null)
+				trx.close();
+		}
+
+		// Next
+		loadActivities();
+		display(-1);
+	} // onOK
+
+	/**
+	 * Batch Approve
+	 */
+	private void cmd_batchApprove() {
+		int AD_User_ID = Env.getAD_User_ID(Env.getCtx());
+		String textMsg = "Batch Approve";
+
+		int count = 0;
+		if (listbox.getSelectedCount() == 0)
+			return;
+
+		for (Listitem item : listbox.getSelectedItems()) {
+			int index = item.getIndex();
+			if (index < 0 || index >= m_activities.length)
+				continue;
+
+			MWFActivity activity = m_activities[index];
+			MWFNode node = activity.getNode();
+
+			Trx trx = null;
+			try {
+				trx = Trx.get(Trx.createTrxName(activity.get_TrxName()), true);
+				trx.setDisplayName(getClass().getName() + "_batch");
+
+				if (MWFNode.ACTION_UserChoice.equals(node.getAction())) {
+					MColumn column = node.getColumn();
+					int dt = column.getAD_Reference_ID();
+					String value = "Y";
+					activity.setUserChoice(AD_User_ID, value, dt, textMsg);
+				} else {
+					activity.setUserConfirmation(AD_User_ID, textMsg);
+				}
+
+				trx.commit();
+				count++;
+			} catch (Exception e) {
+				if (trx != null)
+					trx.rollback();
+				log.log(Level.SEVERE, "Batch Error: " + activity, e);
+			} finally {
+				if (trx != null)
+					trx.close();
+			}
+		}
+
+		Clients.showNotification("Batch Approved: " + count);
+		loadActivities();
+		display(-1);
+	}
+
+}

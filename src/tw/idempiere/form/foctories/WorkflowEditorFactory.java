@@ -15,6 +15,9 @@ public class WorkflowEditorFactory implements IFormFactory {
 		if (formName.equals("tw.idempiere.form.WFPanelTaiwan")) {
 			return new WFPanelTaiwan();
 		}
+		if (formName.equals("tw.idempiere.form.WFActivityTG")) {
+			return new tw.idempiere.form.WWFActivityTG();
+		}
 		return null;
 	}
 

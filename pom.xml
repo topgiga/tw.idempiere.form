@@ -4,7 +4,7 @@
 		<groupId>org.idempiere</groupId>
 		<artifactId>org.idempiere.parent</artifactId>
 		<version>${revision}</version>
-		<relativePath>../idempiere-12pt/org.idempiere.parent/pom.xml</relativePath>
+		<relativePath>../idempiere2024/org.idempiere.parent/pom.xml</relativePath>
 	</parent>
   <groupId>tw.idempiere.form</groupId>
   <artifactId>tw.idempiere.form</artifactId>
