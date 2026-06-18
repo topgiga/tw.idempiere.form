@@ -35,6 +35,7 @@ import org.adempiere.webui.component.Textbox;
 import org.adempiere.webui.component.WListItemRenderer;
 import org.adempiere.webui.component.WListbox;
 import org.adempiere.webui.component.Window;
+import org.adempiere.webui.editor.WChosenboxSearchEditor;
 import org.adempiere.webui.editor.WSearchEditor;
 import org.adempiere.webui.panel.ADForm;
 import org.adempiere.webui.panel.StatusBarPanel;
@@ -46,6 +47,7 @@ import org.compiere.model.MBPartner;
 import org.compiere.model.MColumn;
 import org.compiere.model.MLookup;
 import org.compiere.model.MLookupFactory;
+import org.compiere.model.MTable;
 import org.compiere.model.MOrder;
 import org.compiere.model.MProduction;
 import org.compiere.model.MQuery;
@@ -58,6 +60,7 @@ import org.compiere.model.PO;
 import org.compiere.model.Query;
 import org.compiere.util.CLogger;
 import org.compiere.util.DB;
+import org.compiere.util.ValueNamePair;
 import org.compiere.util.DisplayType;
 import org.compiere.util.Env;
 import org.compiere.util.Msg;
@@ -126,12 +129,21 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private WSearchEditor fForward = null; // dynInit
 	private Label lForward = new Label(Msg.getMsg(Env.getCtx(), "Forward"));
 	private Label lOptional = new Label("(" + Msg.translate(Env.getCtx(), "Optional") + ")");
+	private MLookup m_userLookup = null; // 同轉發的使用者來源（供會簽人多選清單）
+
+	// 會簽指定（僅在「同意後會進會簽節點」時顯示）
+	private static final String NODE_VALUE_COUNTERSIGN = "CounterSign";
+	private Row rowActionCs = new Row();
+	private Label lCsUsers = new Label("會簽人員");
+	private WChosenboxSearchEditor fCsUsers = null; // dynInit
+	private Label lCsRoles = new Label("會簽角色");
+	private WChosenboxSearchEditor fCsRoles = null; // dynInit
 	private StatusBarPanel statusBar = new StatusBarPanel();
 
 	private ListModelTable model = null;
 	private WListbox listbox = new WListbox();
 
-	private final static String HISTORY_DIV_START_TAG = "<div style='height: 100px; border: 1px solid #7F9DB9;'>";
+	private final static String HISTORY_DIV_START_TAG = "<div style='min-height: 100px; max-height: 320px; overflow: auto; border: 1px solid #7F9DB9;'>";
 
 	public WWFActivityTG() {
 		super();
@@ -160,10 +172,24 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		else
 			bBatchApprove.setImage(ThemeManager.getThemeResource("images/Process16.png"));
 
-		MLookup lookup = MLookupFactory.get(Env.getCtx(), m_WindowNo,
+		m_userLookup = MLookupFactory.get(Env.getCtx(), m_WindowNo,
 				0, 10443, DisplayType.Search);
-		fForward = new WSearchEditor(lookup, Msg.translate(
+		fForward = new WSearchEditor(m_userLookup, Msg.translate(
 				Env.getCtx(), "AD_User_ID"), "", true, false, true);
+
+		// 會簽人/角色：Chosen Multiple Selection Search（打字搜尋、chip 多選）
+		try {
+			fCsUsers = new WChosenboxSearchEditor(m_userLookup, "會簽人員", "", false, false, true);
+			String roleVal = "AD_Role.AD_Role_ID IN (SELECT AD_Role_ID FROM AD_WF_Responsible"
+					+ " WHERE ResponsibleType='R' AND IsActive='Y' AND AD_Role_ID IS NOT NULL)";
+			// 用 TableDir 從 ColumnName 推出 AD_Role 表（Search 型無法只憑 ColumnName 合成）；
+			// 搜尋體驗由 WChosenboxSearchEditor 提供，與 lookup 型別無關。
+			MLookup roleLookup = MLookupFactory.get(Env.getCtx(), m_WindowNo, 0, DisplayType.TableDir,
+					Env.getLanguage(Env.getCtx()), "AD_Role_ID", 0, false, roleVal);
+			fCsRoles = new WChosenboxSearchEditor(roleLookup, "會簽角色", "", false, false, true);
+		} catch (Exception e) {
+			log.log(Level.SEVERE, "建立會簽選人元件失敗", e);
+		}
 
 		init();
 		display(-1);
@@ -328,6 +354,21 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		rowAction1.appendChild(hboxAnswer);
 		rowAction1.appendChild(new Label());
 		rowsAction.appendChild(rowAction1);
+
+		// Row 1.5: 會簽指定（人/角色 多選；預設隱藏，由 display() 決定）
+		rowActionCs.appendChild(lCsUsers);
+		Hbox hboxCs = new Hbox();
+		hboxCs.setHflex("1");
+		if (fCsUsers != null)
+			hboxCs.appendChild(fCsUsers.getComponent());
+		hboxCs.appendChild(new Separator("vertical"));
+		hboxCs.appendChild(lCsRoles);
+		if (fCsRoles != null)
+			hboxCs.appendChild(fCsRoles.getComponent());
+		rowActionCs.appendChild(hboxCs);
+		rowActionCs.appendChild(new Label());
+		rowActionCs.setVisible(false);
+		rowsAction.appendChild(rowActionCs);
 
 		// Row 2: Comment
 		Row rowAction2 = new Row();
@@ -674,6 +715,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		bOK.setEnabled(selIndex >= 0);
 		fForward.setValue(null);
 		fForward.setReadWrite(selIndex >= 0);
+		// 會簽指定區塊預設隱藏並清空，由 display() 視節點決定是否顯示
+		rowActionCs.setVisible(false);
+		if (fCsUsers != null)
+			fCsUsers.setValue(null);
+		if (fCsRoles != null)
+			fCsRoles.setValue(null);
 		//
 		statusBar.setStatusDB(String.valueOf(selIndex + 1) + "/" + m_activities.length);
 		m_activity = null;
@@ -755,6 +802,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		} else
 			log.log(Level.SEVERE, "Unknown Node Action: " + node.getAction());
 
+		// 此節點同意後會進會簽 node → 顯示會簽指定（人/角色）
+		if (leadsToCountersign(node)) {
+			populateCountersignPickers();
+			rowActionCs.setVisible(true);
+		}
+
 		statusBar.setStatusDB((m_index + 1) + "/" + m_activities.length);
 		statusBar.setStatusLine(Msg.getMsg(Env.getCtx(), "WFActivities"));
 	} // display
@@ -764,7 +817,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		MWorkflowAbstractMessage abstractMessage = MWorkflowAbstractMessage.get(Env.getCtx(),
 				m_activity.getAD_Table_ID(), m_activity.getRecord_ID(), null);
 		if (abstractMessage.get_ID() > 0 && abstractMessage.getAbstractMessage() != null) {
-			return HISTORY_DIV_START_TAG + abstractMessage.getAbstractMessage().replaceAll("\n", "<br />") + "</div>";
+			return HISTORY_DIV_START_TAG + abstractMessage.getAbstractMessage().replaceAll("\n", "<br />")
+					+ getCountersignContent() + "</div>";
 		}
 
 		// 2. Check for Table Support TextMsg
@@ -799,6 +853,14 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		return HISTORY_DIV_START_TAG + m_activity.getHistoryHTML() + "</div>";
 	}
 
+	/** 取會簽段 HTML（即時呼叫 countersignmessage 函式）；無會簽資料回空字串。 */
+	private String getCountersignContent() {
+		String html = DB.getSQLValueString(null,
+				"SELECT countersignmessage(CAST(? AS numeric), CAST(? AS numeric))",
+				m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
+		return (html == null || html.trim().length() == 0) ? "" : "<br/>" + html;
+	}
+
 	private String getActivityTextMsg() {
 		// TODO Auto-generated method stub
 		int counter = 0;
@@ -819,6 +881,88 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		if (counter > 0)
 			info = "\n ==相關已簽核內容==\n" + info;
 		return info;
+	}
+
+	// ====================================================================
+	// 會簽指定（人/角色）
+	// ====================================================================
+
+	/**
+	 * 此節點同意後是否會走到會簽 node：
+	 * 直接出線指向 Value=CounterSign，或經過一個中間節點（如會簽通知 CountersignNotice）再到會簽 node。
+	 */
+	private boolean leadsToCountersign(MWFNode node) {
+		// 會簽 node 本身永不顯示選人框（即使有短迴圈接回，會簽人也不該看到指定欄位）
+		if (NODE_VALUE_COUNTERSIGN.equals(node.getValue())) {
+			return false;
+		}
+		String sql = "SELECT COUNT(*) FROM AD_WF_NodeNext nn1 "
+				+ "JOIN AD_WF_Node n1 ON n1.AD_WF_Node_ID = nn1.AD_WF_Next_ID "
+				+ "WHERE nn1.AD_WF_Node_ID=? AND nn1.IsActive='Y' AND ("
+				+ "  n1.Value=? "
+				+ "  OR EXISTS (SELECT 1 FROM AD_WF_NodeNext nn2 "
+				+ "             JOIN AD_WF_Node n2 ON n2.AD_WF_Node_ID = nn2.AD_WF_Next_ID "
+				+ "             WHERE nn2.AD_WF_Node_ID = n1.AD_WF_Node_ID AND nn2.IsActive='Y' AND n2.Value=?))";
+		return DB.getSQLValue(null, sql, node.getAD_WF_Node_ID(),
+				NODE_VALUE_COUNTERSIGN, NODE_VALUE_COUNTERSIGN) > 0;
+	}
+
+	/** 預選上一輪名單（搜尋編輯器用 setValue(逗號分隔 id) 帶入；查無前一輪則清空）。 */
+	private void populateCountersignPickers() {
+		if (fCsUsers != null)
+			fCsUsers.setValue(idsCsv(previousSelection("U", "AD_User_ID")));
+		if (fCsRoles != null)
+			fCsRoles.setValue(idsCsv(previousSelection("R", "AD_Role_ID")));
+	}
+
+	private static String idsCsv(int[] ids) {
+		StringBuilder sb = new StringBuilder();
+		for (int id : ids) {
+			if (sb.length() > 0)
+				sb.append(",");
+			sb.append(id);
+		}
+		return sb.length() > 0 ? sb.toString() : null;
+	}
+
+	/** 上一輪（最新 process）已指定的對象，供重簽時預選。 */
+	private int[] previousSelection(String targetType, String idColumn) {
+		String sql = "SELECT DISTINCT " + idColumn + " FROM TG_Countersign"
+				+ " WHERE AD_Table_ID=? AND Record_ID=? AND TargetType=? AND " + idColumn + ">0"
+				+ " AND AD_WF_Process_ID=(SELECT MAX(AD_WF_Process_ID) FROM TG_Countersign"
+				+ " WHERE AD_Table_ID=? AND Record_ID=?)";
+		return DB.getIDsEx(null, sql, m_activity.getAD_Table_ID(), m_activity.getRecord_ID(), targetType,
+				m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
+	}
+
+	/** 將勾選的人/角色寫成 TG_Countersign 待簽列（GenericPO；CreatedBy 由 PO 自動帶＝目前簽核者）。 */
+	private void writeCountersign(String trxName) {
+		int tableId = m_activity.getAD_Table_ID();
+		int recordId = m_activity.getRecord_ID();
+		int processId = m_activity.getAD_WF_Process_ID();
+		int orgId = m_activity.getAD_Org_ID();
+		if (fCsUsers != null)
+			for (ValueNamePair vnp : fCsUsers.getComponent().getChosenbox().getSelectedObjects())
+				insertCountersign(tableId, recordId, processId, orgId, "U", Integer.parseInt(vnp.getValue()), 0, trxName);
+		if (fCsRoles != null)
+			for (ValueNamePair vnp : fCsRoles.getComponent().getChosenbox().getSelectedObjects())
+				insertCountersign(tableId, recordId, processId, orgId, "R", 0, Integer.parseInt(vnp.getValue()), trxName);
+	}
+
+	private void insertCountersign(int tableId, int recordId, int processId, int orgId,
+			String targetType, int userId, int roleId, String trxName) {
+		PO cs = MTable.get(Env.getCtx(), "TG_Countersign").getPO(0, trxName);
+		cs.set_ValueOfColumn("AD_Org_ID", orgId);
+		cs.set_ValueOfColumn("AD_Table_ID", tableId);
+		cs.set_ValueOfColumn("Record_ID", recordId);
+		cs.set_ValueOfColumn("AD_WF_Process_ID", processId);
+		cs.set_ValueOfColumn("TargetType", targetType);
+		if (userId > 0)
+			cs.set_ValueOfColumn("AD_User_ID", userId);
+		if (roleId > 0)
+			cs.set_ValueOfColumn("AD_Role_ID", roleId);
+		cs.set_ValueOfColumn("Status", "W");
+		cs.saveEx();
 	}
 
 	/**
@@ -932,6 +1076,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				if (log.isLoggable(Level.CONFIG))
 					log.config("Answer=" + value + " - " + textMsg);
 				try {
+					// 同意(Y)且此節點接會簽 → 先在同一 trx 寫會簽名單，
+					// setUserChoice 推進進會簽 node 後，fan-out 才撈得到本輪名單。
+					if (leadsToCountersign(node) && "Y".equals(value)) {
+						m_activity.set_TrxName(trx.getTrxName());
+						writeCountersign(trx.getTrxName());
+					}
 					m_activity.setUserChoice(AD_User_ID, value, dt, textMsg);
 				} catch (Exception e) {
 					log.log(Level.SEVERE, node.getName(), e);
