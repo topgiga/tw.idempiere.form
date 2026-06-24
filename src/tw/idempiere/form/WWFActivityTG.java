@@ -17,7 +17,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 
 import org.adempiere.webui.LayoutUtils;
@@ -469,7 +471,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			pstmt.setInt(3, AD_User_ID);
 			pstmt.setInt(4, AD_User_ID);
 			pstmt.setInt(5, AD_User_ID);
-			pstmt.setInt(6, AD_Client_ID);
+			pstmt.setInt(6, AD_User_ID); // 代簽：代理人(登入者)
+			pstmt.setInt(7, AD_Client_ID);
 			rs = pstmt.executeQuery();
 			if (rs.next()) {
 				count = rs.getInt(1);
@@ -500,6 +503,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		model = new ListModelTable();
 
 		ArrayList<MWFActivity> list = new ArrayList<MWFActivity>();
+		// 代簽：登入者目前可代簽的(請假中)主管集合 + 開放代簽的單據集合，供清單逐列標示用（查一次，避免每列打 DB）
+		Set<Integer> delegatedSupIds = getDelegatedSupervisorIDs();
+		Set<Integer> delegationTableIds = getDelegationTableIDs();
 		String sql = "SELECT * FROM AD_WF_Activity a "
 				+ "WHERE " + getWhereActivities()
 				+ " ORDER BY a.Priority DESC, Created";
@@ -516,13 +522,24 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			pstmt.setInt(3, AD_User_ID);
 			pstmt.setInt(4, AD_User_ID);
 			pstmt.setInt(5, AD_User_ID);
-			pstmt.setInt(6, AD_Client_ID);
+			pstmt.setInt(6, AD_User_ID); // 代簽：代理人(登入者)
+			pstmt.setInt(7, AD_Client_ID);
 
 			rs = pstmt.executeQuery();
 			while (rs.next()) {
 				MWFActivity activity = new MWFActivity(Env.getCtx(), rs, null);
 				list.add(activity);
 				List<Object> rowData = new ArrayList<Object>();
+
+				// 0. 代簽標示：待辦 owner 為登入者可代簽的(請假中)主管時，顯示「代 XXX 主管」
+				String delegateMark = "";
+				int ownerId = activity.getAD_User_ID();
+				if (ownerId > 0 && delegatedSupIds.contains(ownerId)
+						&& delegationTableIds.contains(activity.getAD_Table_ID())) {
+					MUser sup = MUser.get(Env.getCtx(), ownerId);
+					delegateMark = "代 " + (sup != null ? sup.getName() : ("#" + ownerId)) + " 主管";
+				}
+				rowData.add(delegateMark);
 
 				// 1. User/Contact
 				String userName = "";
@@ -595,6 +612,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		m_index = 0;
 
 		String[] columns = new String[] {
+				"代簽",
 				Msg.translate(Env.getCtx(), "AD_User_ID"),
 				Msg.translate(Env.getCtx(), "DocumentType"),
 				Msg.translate(Env.getCtx(), "AD_WF_Node_ID"),
@@ -617,6 +635,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		header = new ListHeader();
 		ZKUpdateUtil.setWidth(header, null);
 		renderer.setListHeader(4, header);
+		header = new ListHeader();
+		ZKUpdateUtil.setWidth(header, null);
+		renderer.setListHeader(5, header);
 
 		renderer.addTableValueChangeListener(listbox);
 		model.setNoColumns(columns.length);
@@ -691,9 +712,96 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				+ " WHERE a.AD_WF_Responsible_ID=r.AD_WF_Responsible_ID AND r.ResponsibleType='R' AND ur.AD_User_ID=? AND ur.isActive = 'Y')" // #4
 				/// * Manual Responsible */
 				+ " OR EXISTS (SELECT * FROM AD_WF_ActivityApprover r "
-				+ " WHERE a.AD_WF_Activity_ID=r.AD_WF_Activity_ID AND r.AD_User_ID=? AND r.isActive = 'Y')"
-				+ ") AND a.AD_Client_ID=?"; // #5
+				+ " WHERE a.AD_WF_Activity_ID=r.AD_WF_Activity_ID AND r.AD_User_ID=? AND r.isActive = 'Y')" // #5
+				// 代簽：待辦 owner 為請假中(已核准且涵蓋今天)主管，且登入者是其代理人
+				+ " OR EXISTS (SELECT 1 FROM AD_User u"
+				+ " JOIN HR_AbsenceNote ab ON ab.AD_User_ID = u.AD_User_ID"
+				+ " WHERE u.AD_User_ID = a.AD_User_ID AND u.Substitute_User_ID = ?" // #6 代理人(登入者)
+				+ " AND u.IsActive='Y' AND ab.DocStatus='CO'"
+				+ " AND current_date BETWEEN ab.DateAbsenceFrom::date AND ab.DateAbsenceTo::date"
+				+ " AND a.AD_Table_ID IN (" + delegationTableIDsCsv() + "))" // 限白名單單據
+				+ ") AND a.AD_Client_ID=?"; // #7
 		return where;
+	}
+
+	/**
+	 * 代簽判定：若這張待辦的 owner 是「請假中(已核准且涵蓋今天)且設定登入者為代理人」的主管，
+	 * 回傳該主管 AD_User_ID；否則回傳 0。供簽核留痕標註用。
+	 */
+	private int getDelegatedSupervisorID(MWFActivity activity) {
+		if (activity == null)
+			return 0;
+		if (!getDelegationTableIDs().contains(activity.getAD_Table_ID()))
+			return 0; // 此單據未開放代簽
+		int ownerID = activity.getAD_User_ID();
+		int meID = Env.getAD_User_ID(Env.getCtx());
+		if (ownerID <= 0 || ownerID == meID)
+			return 0;
+		String sql = "SELECT u.AD_User_ID FROM AD_User u"
+				+ " JOIN HR_AbsenceNote ab ON ab.AD_User_ID = u.AD_User_ID"
+				+ " WHERE u.AD_User_ID=? AND u.Substitute_User_ID=? AND u.IsActive='Y'"
+				+ " AND ab.DocStatus='CO'"
+				+ " AND current_date BETWEEN ab.DateAbsenceFrom::date AND ab.DateAbsenceTo::date";
+		int supId = DB.getSQLValue(null, sql, ownerID, meID);
+		return supId > 0 ? supId : 0;
+	}
+
+	/**
+	 * 由 SysConfig {@code TABLE_SUPPORT_DELEGATE}（逗號分隔 table 名）解析出「允許代簽」的
+	 * AD_Table_ID 集合。預設空字串＝沒有任何單據開放代簽。
+	 */
+	private Set<Integer> getDelegationTableIDs() {
+		Set<Integer> ids = new HashSet<Integer>();
+		String csv = MSysConfig.getValue("TABLE_SUPPORT_DELEGATE", "");
+		if (csv == null || csv.trim().length() == 0)
+			return ids;
+		for (String name : csv.split(",")) {
+			name = name.trim();
+			if (name.length() == 0)
+				continue;
+			int tableId = MTable.getTable_ID(name);
+			if (tableId > 0)
+				ids.add(tableId);
+		}
+		return ids;
+	}
+
+	/** 供 SQL 內嵌用：允許代簽的 AD_Table_ID 清單字串（皆為整數，安全內嵌）；無則回 "-1"（永不命中）。 */
+	private String delegationTableIDsCsv() {
+		StringBuilder sb = new StringBuilder();
+		for (int id : getDelegationTableIDs()) {
+			if (sb.length() > 0)
+				sb.append(",");
+			sb.append(id);
+		}
+		return sb.length() > 0 ? sb.toString() : "-1";
+	}
+
+	/**
+	 * 登入者目前可代簽的主管集合：設定登入者為代理人(Substitute_User_ID)、且有涵蓋今天的已核准假單者。
+	 * 查一次供清單逐列比對，避免每列各打一次 DB。
+	 */
+	private Set<Integer> getDelegatedSupervisorIDs() {
+		int meID = Env.getAD_User_ID(Env.getCtx());
+		String sql = "SELECT DISTINCT u.AD_User_ID FROM AD_User u"
+				+ " JOIN HR_AbsenceNote ab ON ab.AD_User_ID = u.AD_User_ID"
+				+ " WHERE u.Substitute_User_ID=? AND u.IsActive='Y'"
+				+ " AND ab.DocStatus='CO'"
+				+ " AND current_date BETWEEN ab.DateAbsenceFrom::date AND ab.DateAbsenceTo::date";
+		Set<Integer> ids = new HashSet<Integer>();
+		for (int id : DB.getIDsEx(null, sql, meID))
+			ids.add(id);
+		return ids;
+	}
+
+	/** 若這張待辦是代簽，於 textMsg 前加「[代簽] 代 XXX 簽核」標註；否則原樣回傳。 */
+	private String applyDelegateTag(MWFActivity activity, String textMsg) {
+		int supId = getDelegatedSupervisorID(activity);
+		if (supId <= 0)
+			return textMsg;
+		MUser sup = MUser.get(Env.getCtx(), supId);
+		String tag = "[代簽] 代 " + (sup != null ? sup.getName() : ("#" + supId)) + " 簽核";
+		return (textMsg == null || textMsg.trim().length() == 0) ? tag : tag + " - " + textMsg;
 	}
 
 	/**
@@ -818,7 +926,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				m_activity.getAD_Table_ID(), m_activity.getRecord_ID(), null);
 		if (abstractMessage.get_ID() > 0 && abstractMessage.getAbstractMessage() != null) {
 			return HISTORY_DIV_START_TAG + abstractMessage.getAbstractMessage().replaceAll("\n", "<br />")
-					+ getCountersignContent() + "</div>";
+					+ getCountersignContent() + getApprovalCommentContent() + "</div>";
 		}
 
 		// 2. Check for Table Support TextMsg
@@ -857,6 +965,14 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private String getCountersignContent() {
 		String html = DB.getSQLValueString(null,
 				"SELECT countersignmessage(CAST(? AS numeric), CAST(? AS numeric))",
+				m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
+		return (html == null || html.trim().length() == 0) ? "" : "<br/>" + html;
+	}
+
+	/** 取簽核意見段 HTML（即時呼叫 approvalcommentmessage 函式）；無資料回空字串。 */
+	private String getApprovalCommentContent() {
+		String html = DB.getSQLValueString(null,
+				"SELECT approvalcommentmessage(CAST(? AS numeric), CAST(? AS numeric))",
 				m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
 		return (html == null || html.trim().length() == 0) ? "" : "<br/>" + html;
 	}
@@ -1021,6 +1137,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		}
 		int AD_User_ID = Env.getAD_User_ID(Env.getCtx());
 		String textMsg = fTextMsg.getValue();
+		// 代簽留痕：請假主管的待辦由代理人(登入者)簽核時自動標註
+		textMsg = applyDelegateTag(m_activity, textMsg);
 		//
 		MWFNode node = m_activity.getNode();
 
@@ -1144,13 +1262,14 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				trx = Trx.get(Trx.createTrxName(activity.get_TrxName()), true);
 				trx.setDisplayName(getClass().getName() + "_batch");
 
+				String msg = applyDelegateTag(activity, textMsg);
 				if (MWFNode.ACTION_UserChoice.equals(node.getAction())) {
 					MColumn column = node.getColumn();
 					int dt = column.getAD_Reference_ID();
 					String value = "Y";
-					activity.setUserChoice(AD_User_ID, value, dt, textMsg);
+					activity.setUserChoice(AD_User_ID, value, dt, msg);
 				} else {
-					activity.setUserConfirmation(AD_User_ID, textMsg);
+					activity.setUserConfirmation(AD_User_ID, msg);
 				}
 
 				trx.commit();
