@@ -39,6 +39,9 @@ import org.adempiere.webui.component.WListbox;
 import org.adempiere.webui.component.Window;
 import org.adempiere.webui.editor.WChosenboxSearchEditor;
 import org.adempiere.webui.editor.WSearchEditor;
+import org.adempiere.webui.event.DialogEvents;
+import org.adempiere.webui.factory.InfoManager;
+import org.adempiere.webui.info.InfoWindow;
 import org.adempiere.webui.panel.ADForm;
 import org.adempiere.webui.panel.StatusBarPanel;
 import org.adempiere.webui.session.SessionManager;
@@ -128,6 +131,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Textbox fTextMsg = new Textbox();
 	private Button bOK = new Button();
 	private Toolbarbutton bBatchApprove = new Toolbarbutton(); // Batch Approve
+	private Button bSplit = new Button(); // 拆單：依 SysConfig TABLE_SUPPORT_SPLIT 對應的單據才顯示
+	private int m_splitInfoWindowID = 0; // 目前單據對應的拆單 Info Window（0=不顯示）
 	private WSearchEditor fForward = null; // dynInit
 	private Label lForward = new Label(Msg.getMsg(Env.getCtx(), "Forward"));
 	private Label lOptional = new Label("(" + Msg.translate(Env.getCtx(), "Optional") + ")");
@@ -173,6 +178,15 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			bBatchApprove.setIconSclass("z-icon-Process");
 		else
 			bBatchApprove.setImage(ThemeManager.getThemeResource("images/Process16.png"));
+
+		// 部分簽核按鈕：預設隱藏，由 display() 依當前單據是否在 TABLE_SUPPORT_SPLIT 白名單決定顯示
+		bSplit.setLabel("部分簽核");
+		bSplit.addEventListener(Events.ON_CLICK, this);
+		if (ThemeManager.isUseFontIconForImage())
+			bSplit.setIconSclass("z-icon-Process");
+		else
+			bSplit.setImage(ThemeManager.getThemeResource("images/Process16.png"));
+		bSplit.setVisible(false);
 
 		m_userLookup = MLookupFactory.get(Env.getCtx(), m_WindowNo,
 				0, 10443, DisplayType.Search);
@@ -353,6 +367,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		hboxAnswer.appendChild(new Separator("vertical"));
 		hboxAnswer.appendChild(bZoom);
 		bZoom.addEventListener(Events.ON_CLICK, this);
+		hboxAnswer.appendChild(new Separator("vertical"));
+		hboxAnswer.appendChild(bSplit);
 		rowAction1.appendChild(hboxAnswer);
 		rowAction1.appendChild(new Label());
 		rowsAction.appendChild(rowAction1);
@@ -429,6 +445,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				Events.echoEvent("onOK", this, null);
 			} else if (comp == bBatchApprove) {
 				cmd_batchApprove();
+			} else if (comp == bSplit) {
+				cmd_split();
 			} else if (comp == fAnswerButton)
 
 				cmd_button();
@@ -821,6 +839,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		fTextMsg.setReadonly(!(selIndex >= 0));
 		bZoom.setEnabled(selIndex >= 0);
 		bOK.setEnabled(selIndex >= 0);
+		// 拆單按鈕預設隱藏，由 display() 視當前單據決定
+		bSplit.setVisible(false);
+		m_splitInfoWindowID = 0;
 		fForward.setValue(null);
 		fForward.setReadWrite(selIndex >= 0);
 		// 會簽指定區塊預設隱藏並清空，由 display() 視節點決定是否顯示
@@ -915,6 +936,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			populateCountersignPickers();
 			rowActionCs.setVisible(true);
 		}
+
+		// 部分簽核：當前單據在 TABLE_SUPPORT_SPLIT 白名單、且這筆不是會簽 node 時才顯示按鈕。
+		// 會簽人員只是其中一個平行簽核者，無權拆單，故會簽 node 上不顯示。
+		boolean isCountersignNode = NODE_VALUE_COUNTERSIGN.equals(node.getValue());
+		m_splitInfoWindowID = getSplitInfoWindowID(m_activity.getAD_Table_ID());
+		bSplit.setVisible(m_splitInfoWindowID > 0 && !isCountersignNode);
 
 		statusBar.setStatusDB((m_index + 1) + "/" + m_activities.length);
 		statusBar.setStatusLine(Msg.getMsg(Env.getCtx(), "WFActivities"));
@@ -1080,6 +1107,73 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		cs.set_ValueOfColumn("Status", "W");
 		cs.saveEx();
 	}
+
+	// ====================================================================
+	// 拆單（依 SysConfig 對應 Info Window）
+	// ====================================================================
+
+	/**
+	 * 由 SysConfig {@code TABLE_SUPPORT_SPLIT}（格式 {@code TableName:AD_InfoWindow_ID}，逗號分隔）
+	 * 取指定單據對應的拆單 Info Window ID；查無對應或設定空字串時回 0（＝不顯示拆單）。
+	 */
+	private int getSplitInfoWindowID(int tableId) {
+		String csv = MSysConfig.getValue("TABLE_SUPPORT_SPLIT", "");
+		if (csv == null || csv.trim().length() == 0)
+			return 0;
+		for (String pair : csv.split(",")) {
+			int sep = pair.lastIndexOf(":");
+			if (sep <= 0)
+				continue;
+			String tableName = pair.substring(0, sep).trim();
+			if (MTable.getTable_ID(tableName) != tableId)
+				continue;
+			try {
+				return Integer.parseInt(pair.substring(sep + 1).trim());
+			} catch (NumberFormatException e) {
+				log.warning("TABLE_SUPPORT_SPLIT 設定的 InfoWindow ID 非數字: " + pair);
+				return 0;
+			}
+		}
+		return 0;
+	}
+
+	/**
+	 * 拆單：以當前單據開對應的 Info Window，並把單據 context 以 predefined 變數帶入，
+	 * 供 Info Window 的 WHERE（{@code @+Split_Record_ID@}）與後續拆單 Process 使用。
+	 */
+	private void cmd_split() {
+		if (m_activity == null || m_splitInfoWindowID <= 0)
+			return;
+		// 換行分隔的 var=value；Info Window 內以 @+var@ 取用（前綴 + 為 predefined 變數）
+		String vars = "Split_Record_ID=" + m_activity.getRecord_ID()
+				+ "\nSplit_AD_Table_ID=" + m_activity.getAD_Table_ID()
+				+ "\nSplit_AD_WF_Activity_ID=" + m_activity.getAD_WF_Activity_ID();
+		// 自建 Info Window（帶 predefined 變數）後以視窗模式顯示，並立即查詢，免使用者手動重新整理
+		InfoWindow iw = InfoManager.create(m_splitInfoWindowID, vars);
+		if (iw == null) {
+			FDialog.error(m_WindowNo, this, "NotValid");
+			return;
+		}
+		iw.setAttribute(Window.MODE_KEY, Window.Mode.OVERLAPPED);
+		iw.setCloseAfterExecutionOfProcess(true); // 拆單 Process 跑完自動關閉
+		iw.setClosable(true);
+		iw.setSizable(true);
+		iw.setMaximizable(true);
+		iw.setBorder("normal");
+		iw.setContentStyle("overflow: auto");
+		ZKUpdateUtil.setWidth(iw, "85%");
+		ZKUpdateUtil.setHeight(iw, "85%");
+		// Info Window 關閉時：若不是取消（代表跑過拆單 Process），重載簽核清單，
+		// 避免已處理的活動仍留在畫面被誤按第二次
+		iw.addEventListener(DialogEvents.ON_WINDOW_CLOSE, e -> {
+			if (!iw.isCancelled()) {
+				loadActivities();
+				display(-1);
+			}
+		});
+		AEnv.showWindow(iw);
+		iw.onUserQuery(); // 開啟即執行查詢（@+Split_Record_ID@ 已就緒）
+	} // cmd_split
 
 	/**
 	 * Zoom
