@@ -48,6 +48,8 @@ import org.adempiere.webui.session.SessionManager;
 import org.adempiere.webui.theme.ThemeManager;
 import org.adempiere.webui.util.ZKUpdateUtil;
 import org.adempiere.webui.window.FDialog;
+import org.compiere.model.MAttachment;
+import org.compiere.model.MAttachmentEntry;
 import org.compiere.model.MBPartner;
 import org.compiere.model.MColumn;
 import org.compiere.model.MLookup;
@@ -77,8 +79,10 @@ import org.zkoss.zk.ui.Component;
 import org.zkoss.zk.ui.event.Event;
 import org.zkoss.zk.ui.event.EventListener;
 import org.zkoss.zk.ui.event.Events;
+import org.zkoss.util.media.AMedia;
 import org.zkoss.zk.ui.util.Clients;
 import org.zkoss.zul.Borderlayout;
+import org.zkoss.zul.Filedownload;
 import org.zkoss.zul.Center;
 import org.zkoss.zul.North;
 import org.zkoss.zul.South;
@@ -87,6 +91,7 @@ import org.zkoss.zul.Caption;
 import org.zkoss.zul.Groupbox;
 import org.zkoss.zul.Hbox;
 import org.zkoss.zul.Html;
+import org.zkoss.zul.Iframe;
 import org.zkoss.zul.Listitem;
 import org.zkoss.zul.Separator;
 import org.zkoss.zul.Toolbar;
@@ -133,6 +138,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Toolbarbutton bBatchApprove = new Toolbarbutton(); // Batch Approve
 	private Button bSplit = new Button(); // 拆單：依 SysConfig TABLE_SUPPORT_SPLIT 對應的單據才顯示
 	private int m_splitInfoWindowID = 0; // 目前單據對應的拆單 Info Window（0=不顯示）
+	private Button bAttachment = new Button(); // 唯讀檢視當前單據附件；依附件數啟用
 	private WSearchEditor fForward = null; // dynInit
 	private Label lForward = new Label(Msg.getMsg(Env.getCtx(), "Forward"));
 	private Label lOptional = new Label("(" + Msg.translate(Env.getCtx(), "Optional") + ")");
@@ -187,6 +193,15 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		else
 			bSplit.setImage(ThemeManager.getThemeResource("images/Process16.png"));
 		bSplit.setVisible(false);
+
+		// 附件按鈕：唯讀檢視；預設停用，由 display() 依附件數啟用並標數量
+		bAttachment.setLabel("附件");
+		bAttachment.addEventListener(Events.ON_CLICK, this);
+		if (ThemeManager.isUseFontIconForImage())
+			bAttachment.setIconSclass("z-icon-Attachment");
+		else
+			bAttachment.setImage(ThemeManager.getThemeResource("images/Attachment16.png"));
+		bAttachment.setDisabled(true);
 
 		m_userLookup = MLookupFactory.get(Env.getCtx(), m_WindowNo,
 				0, 10443, DisplayType.Search);
@@ -368,7 +383,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		hboxAnswer.appendChild(bZoom);
 		bZoom.addEventListener(Events.ON_CLICK, this);
 		hboxAnswer.appendChild(new Separator("vertical"));
-		hboxAnswer.appendChild(bSplit);
+		hboxAnswer.appendChild(bAttachment);
 		rowAction1.appendChild(hboxAnswer);
 		rowAction1.appendChild(new Label());
 		rowsAction.appendChild(rowAction1);
@@ -409,11 +424,16 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		hboxForward.appendChild(lOptional);
 		rowAction3.appendChild(hboxForward);
 
-		// Button OK
+		// Button OK + 部分簽核（同一格，部分簽核在 OK 右邊）
 		bOK.addEventListener(Events.ON_CLICK, this);
 		// Reset styling just in case
 		bOK.setStyle(null);
-		rowAction3.appendChild(bOK);
+		Hbox hboxOK = new Hbox();
+		hboxOK.setAlign("center");
+		hboxOK.appendChild(bOK);
+		hboxOK.appendChild(new Separator("vertical"));
+		hboxOK.appendChild(bSplit);
+		rowAction3.appendChild(hboxOK);
 
 		rowsAction.appendChild(rowAction3);
 
@@ -447,6 +467,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				cmd_batchApprove();
 			} else if (comp == bSplit) {
 				cmd_split();
+			} else if (comp == bAttachment) {
+				cmd_attachment();
 			} else if (comp == fAnswerButton)
 
 				cmd_button();
@@ -842,6 +864,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		// 拆單按鈕預設隱藏，由 display() 視當前單據決定
 		bSplit.setVisible(false);
 		m_splitInfoWindowID = 0;
+		// 附件按鈕預設停用，由 display() 依附件數啟用
+		bAttachment.setLabel("附件");
+		bAttachment.setDisabled(true);
 		fForward.setValue(null);
 		fForward.setReadWrite(selIndex >= 0);
 		// 會簽指定區塊預設隱藏並清空，由 display() 視節點決定是否顯示
@@ -942,6 +967,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		boolean isCountersignNode = NODE_VALUE_COUNTERSIGN.equals(node.getValue());
 		m_splitInfoWindowID = getSplitInfoWindowID(m_activity.getAD_Table_ID());
 		bSplit.setVisible(m_splitInfoWindowID > 0 && !isCountersignNode);
+
+		// 附件：有附件才啟用，並在標籤標數量
+		MAttachment att = MAttachment.get(Env.getCtx(), m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
+		int attCount = (att != null) ? att.getEntryCount() : 0;
+		bAttachment.setLabel(attCount > 0 ? "附件(" + attCount + ")" : "附件");
+		bAttachment.setDisabled(attCount == 0);
 
 		statusBar.setStatusDB((m_index + 1) + "/" + m_activities.length);
 		statusBar.setStatusLine(Msg.getMsg(Env.getCtx(), "WFActivities"));
@@ -1174,6 +1205,74 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		AEnv.showWindow(iw);
 		iw.onUserQuery(); // 開啟即執行查詢（@+Split_Record_ID@ 已就緒）
 	} // cmd_split
+
+	/**
+	 * 唯讀檢視當前單據附件：列出附件、每筆可檢視/下載；不提供新增/刪除。
+	 */
+	private void cmd_attachment() {
+		if (m_activity == null)
+			return;
+		MAttachment att = MAttachment.get(Env.getCtx(), m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
+		if (att == null || att.getEntryCount() == 0) {
+			Clients.showNotification("無附件");
+			return;
+		}
+
+		Window win = new Window();
+		win.setTitle("附件檢視（唯讀）");
+		win.setClosable(true);
+		win.setSizable(true);
+		win.setMaximizable(true);
+		win.setBorder("normal");
+		win.setContentStyle("overflow:auto");
+		ZKUpdateUtil.setWidth(win, "480px");
+		win.setAttribute(Window.MODE_KEY, Window.Mode.OVERLAPPED);
+
+		Vlayout vlist = new Vlayout();
+		vlist.setStyle("padding:10px;");
+		ZKUpdateUtil.setHflex(vlist, "1");
+		for (int i = 0; i < att.getEntryCount(); i++) {
+			final MAttachmentEntry entry = att.getEntry(i);
+			Hbox row = new Hbox();
+			row.setAlign("center");
+			ZKUpdateUtil.setHflex(row, "1");
+			Label name = new Label((i + 1) + ". " + entry.getName());
+			ZKUpdateUtil.setHflex(name, "1");
+			Button btnView = new Button("檢視");
+			btnView.addEventListener(Events.ON_CLICK, e -> previewEntry(entry));
+			Button btnDl = new Button("下載");
+			btnDl.addEventListener(Events.ON_CLICK, e -> Filedownload
+					.save(new AMedia(entry.getName(), null, entry.getContentType(), entry.getData())));
+			row.appendChild(name);
+			row.appendChild(btnView);
+			row.appendChild(btnDl);
+			vlist.appendChild(row);
+		}
+		win.appendChild(vlist);
+		AEnv.showWindow(win);
+	} // cmd_attachment
+
+	/** 內嵌預覽單一附件：以 Iframe 直接 render（PDF/圖片/文字等瀏覽器可內看的型別），不下載。 */
+	private void previewEntry(MAttachmentEntry entry) {
+		Window win = new Window();
+		win.setTitle(entry.getName());
+		win.setClosable(true);
+		win.setSizable(true);
+		win.setMaximizable(true);
+		win.setBorder("normal");
+		win.setContentStyle("overflow:hidden");
+		ZKUpdateUtil.setWidth(win, "80%");
+		ZKUpdateUtil.setHeight(win, "85%");
+		win.setAttribute(Window.MODE_KEY, Window.Mode.OVERLAPPED);
+
+		Iframe iframe = new Iframe();
+		ZKUpdateUtil.setWidth(iframe, "100%");
+		ZKUpdateUtil.setHeight(iframe, "100%");
+		iframe.setContent(new AMedia(entry.getName(), null, entry.getContentType(), entry.getData()));
+		iframe.setClientAttribute("sandbox", ""); // 沙箱化，避免附件內嵌腳本
+		win.appendChild(iframe);
+		AEnv.showWindow(win);
+	} // previewEntry
 
 	/**
 	 * Zoom
