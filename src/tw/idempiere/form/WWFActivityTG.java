@@ -62,7 +62,6 @@ import org.compiere.model.MRefList;
 import org.compiere.model.MRole;
 import org.compiere.model.MSysConfig;
 import org.compiere.model.MUser;
-import org.compiere.model.MWorkflowAbstractMessage;
 import org.compiere.model.PO;
 import org.compiere.model.Query;
 import org.compiere.util.CLogger;
@@ -980,11 +979,17 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 
 	private String getDocumentInfoContent() {
 		// 1. Check for Abstract Message (Highest Priority)
-		MWorkflowAbstractMessage abstractMessage = MWorkflowAbstractMessage.get(Env.getCtx(),
-				m_activity.getAD_Table_ID(), m_activity.getRecord_ID(), null);
-		if (abstractMessage.get_ID() > 0 && abstractMessage.getAbstractMessage() != null) {
-			return HISTORY_DIV_START_TAG + abstractMessage.getAbstractMessage().replaceAll("\n", "<br />")
-					+ getCountersignContent() + getApprovalCommentContent() + "</div>";
+		// 改撈單據的 AbstractMessage 虛擬欄位（透過載入 PO，ColumnSQL 於載入時運算）：
+		// 一般表的虛擬欄位仍指向 AD_WorkflowAbstractMessage（stored）；請購單則指向 requisitionabstractmessage() 即時函式。
+		// 比照會簽 getCountersignContent() 的即時作法，並與 @AbstractMessage@ 郵件同一來源（虛擬欄位）。
+		PO po = MTable.get(Env.getCtx(), m_activity.getAD_Table_ID()).getPO(m_activity.getRecord_ID(), null);
+		if (po != null && po.get_ColumnIndex("AbstractMessage") >= 0) {
+			Object v = po.get_Value("AbstractMessage");
+			String abstractMsg = (v != null) ? v.toString() : null;
+			if (abstractMsg != null && abstractMsg.trim().length() > 0) {
+				return HISTORY_DIV_START_TAG + abstractMsg.replaceAll("\n", "<br />")
+						+ getCountersignContent() + getApprovalCommentContent() + "</div>";
+			}
 		}
 
 		// 2. Check for Table Support TextMsg
