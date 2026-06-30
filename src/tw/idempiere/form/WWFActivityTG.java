@@ -1257,7 +1257,10 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		AEnv.showWindow(win);
 	} // cmd_attachment
 
-	/** 內嵌預覽單一附件：以 Iframe 直接 render（PDF/圖片/文字等瀏覽器可內看的型別），不下載。 */
+	/**
+	 * 內嵌預覽單一附件：以 Iframe 直接 render（PDF/圖片/文字等瀏覽器可內看的型別），不下載。
+	 * PDF 不設 sandbox（內建檢視器在 sandbox 內會被封鎖），其餘型別維持完全鎖死。
+	 */
 	private void previewEntry(MAttachmentEntry entry) {
 		Window win = new Window();
 		win.setTitle(entry.getName());
@@ -1274,10 +1277,26 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		ZKUpdateUtil.setWidth(iframe, "100%");
 		ZKUpdateUtil.setHeight(iframe, "100%");
 		iframe.setContent(new AMedia(entry.getName(), null, entry.getContentType(), entry.getData()));
-		iframe.setClientAttribute("sandbox", ""); // 沙箱化，避免附件內嵌腳本
+		// 依型別決定 sandbox：
+		// - PDF 完全不設 sandbox。Chrome 的內建 PDF 檢視器（PDFium MimeHandler）在 sandbox
+		//   iframe 內會被直接封鎖（ERR_BLOCKED_BY_RESPONSE），即使加 allow-scripts allow-same-origin
+		//   也擋；故對 PDF 不沙箱化。PDF 內的 JS 由 PDFium 在其受限環境執行，碰不到本頁 DOM/連線，
+		//   風險可接受。
+		// - 其餘型別維持完全鎖死，避免附件夾帶腳本。
+		if (!isPdf(entry))
+			iframe.setClientAttribute("sandbox", "");
 		win.appendChild(iframe);
 		AEnv.showWindow(win);
 	} // previewEntry
+
+	/** 是否為 PDF：先看 contentType，再以副檔名兜底（部分附件未存正確 MIME）。 */
+	private boolean isPdf(MAttachmentEntry entry) {
+		String ct = entry.getContentType();
+		if (ct != null && ct.toLowerCase().contains("pdf"))
+			return true;
+		String name = entry.getName();
+		return name != null && name.toLowerCase().endsWith(".pdf");
+	} // isPdf
 
 	/**
 	 * Zoom
