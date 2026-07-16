@@ -583,10 +583,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				// 1. User/Contact
 				String userName = "";
 				// User 改成 單據 （Table）的 AD_User_ID ，若沒有這個欄位 抓 Createdby
+				// 特例：C_Order（採購/銷售訂單）以 SalesRep_ID 為簽核人，其餘照原邏輯
 				PO po = activity.getPO();
 				if (po != null) {
 					int userID = 0;
-					int idx = po.get_ColumnIndex("AD_User_ID");
+					String userCol = "C_Order".equals(po.get_TableName()) ? "SalesRep_ID" : "AD_User_ID";
+					int idx = po.get_ColumnIndex(userCol);
 					if (idx >= 0) {
 						Object val = po.get_Value(idx);
 						if (val != null && val instanceof Integer)
