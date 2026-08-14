@@ -138,6 +138,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Button bSplit = new Button(); // 拆單：依 SysConfig TABLE_SUPPORT_SPLIT 對應的單據才顯示
 	private int m_splitInfoWindowID = 0; // 目前單據對應的拆單 Info Window（0=不顯示）
 	private Button bAttachment = new Button(); // 唯讀檢視當前單據附件；依附件數啟用
+	private Button bApprovalForm = new Button(); // 簽核總覽：依 SysConfig TABLE_SUPPORT_APPROVAL_FORM 對應的單據才顯示
+	private int m_approvalFormID = 0; // 目前單據對應的簽核總覽 AD_Form（0=不顯示）
+	private Boolean m_hasApprovalFormPerm = null; // 當前登入者是否登記於 TG_PurchaseFormPermission（null=未查，session 內快取）
+	// 外部客製 Form 用來接收帶入單據 Record_ID 的 context key（與 PurchaseApprovalForm.CTX_RECORD_ID 對齊；
+	// 因本 bundle 未依賴 tw.topgiga.purchase，故以字面值維持解耦）
+	private static final String CTX_APPROVAL_FORM_RECORD_ID = "#WB_Record_ID";
 	private WSearchEditor fForward = null; // dynInit
 	private Label lForward = new Label(Msg.getMsg(Env.getCtx(), "Forward"));
 	private Label lOptional = new Label("(" + Msg.translate(Env.getCtx(), "Optional") + ")");
@@ -201,6 +207,15 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		else
 			bAttachment.setImage(ThemeManager.getThemeResource("images/Attachment16.png"));
 		bAttachment.setDisabled(true);
+
+		// 簽核總覽按鈕：預設隱藏，由 display() 依當前單據是否在 TABLE_SUPPORT_APPROVAL_FORM 白名單決定顯示
+		bApprovalForm.setLabel("採購資訊");
+		bApprovalForm.addEventListener(Events.ON_CLICK, this);
+		if (ThemeManager.isUseFontIconForImage())
+			bApprovalForm.setIconSclass("z-icon-Info");
+		else
+			bApprovalForm.setImage(ThemeManager.getThemeResource("images/Info16.png"));
+		bApprovalForm.setVisible(false);
 
 		m_userLookup = MLookupFactory.get(Env.getCtx(), m_WindowNo,
 				0, 10443, DisplayType.Search);
@@ -383,6 +398,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		bZoom.addEventListener(Events.ON_CLICK, this);
 		hboxAnswer.appendChild(new Separator("vertical"));
 		hboxAnswer.appendChild(bAttachment);
+		hboxAnswer.appendChild(new Separator("vertical"));
+		hboxAnswer.appendChild(bApprovalForm);
 		rowAction1.appendChild(hboxAnswer);
 		rowAction1.appendChild(new Label());
 		rowsAction.appendChild(rowAction1);
@@ -468,6 +485,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				cmd_split();
 			} else if (comp == bAttachment) {
 				cmd_attachment();
+			} else if (comp == bApprovalForm) {
+				cmd_openApprovalForm();
 			} else if (comp == fAnswerButton)
 
 				cmd_button();
@@ -865,6 +884,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		// 拆單按鈕預設隱藏，由 display() 視當前單據決定
 		bSplit.setVisible(false);
 		m_splitInfoWindowID = 0;
+		// 簽核總覽按鈕預設隱藏，由 display() 視當前單據決定
+		bApprovalForm.setVisible(false);
+		m_approvalFormID = 0;
 		// 附件按鈕預設停用，由 display() 依附件數啟用
 		bAttachment.setLabel("附件");
 		bAttachment.setDisabled(true);
@@ -968,6 +990,11 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		boolean isCountersignNode = NODE_VALUE_COUNTERSIGN.equals(node.getValue());
 		m_splitInfoWindowID = getSplitInfoWindowID(m_activity.getAD_Table_ID());
 		bSplit.setVisible(m_splitInfoWindowID > 0 && !isCountersignNode);
+
+		// 簽核總覽：當前單據在 TABLE_SUPPORT_APPROVAL_FORM 白名單，且當前登入者（角色或使用者）
+		// 有登記在 TG_PurchaseFormPermission 權限表時，才顯示按鈕
+		m_approvalFormID = getApprovalFormID(m_activity.getAD_Table_ID());
+		bApprovalForm.setVisible(m_approvalFormID > 0 && hasApprovalFormPermission());
 
 		// 附件：有附件才啟用，並在標籤標數量
 		MAttachment att = MAttachment.get(Env.getCtx(), m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
@@ -1179,6 +1206,68 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	 * 拆單：以當前單據開對應的 Info Window，並把單據 context 以 predefined 變數帶入，
 	 * 供 Info Window 的 WHERE（{@code @+Split_Record_ID@}）與後續拆單 Process 使用。
 	 */
+	// ====================================================================
+	// 簽核總覽（依 SysConfig 對應客製 AD_Form）
+	// ====================================================================
+
+	/**
+	 * 簽核總覽按鈕的白名單權限：當前登入者（角色或使用者任一命中）是否登記在
+	 * {@code TG_PurchaseFormPermission} 權限表。空表或查無登記＝無權限（＝不顯示按鈕）。
+	 * 角色/使用者於整個 session 不變，故結果快取一次。
+	 */
+	private boolean hasApprovalFormPermission() {
+		if (m_hasApprovalFormPerm == null) {
+			final String sql = "SELECT COUNT(*) FROM TG_PurchaseFormPermission"
+					+ " WHERE IsActive='Y' AND AD_Client_ID=?"
+					+ " AND (AD_Role_ID=? OR AD_User_ID=?)";
+			int cnt = DB.getSQLValue(null, sql,
+					Env.getAD_Client_ID(Env.getCtx()),
+					Env.getAD_Role_ID(Env.getCtx()),
+					Env.getAD_User_ID(Env.getCtx()));
+			m_hasApprovalFormPerm = Boolean.valueOf(cnt > 0);
+		}
+		return m_hasApprovalFormPerm.booleanValue();
+	}
+
+	/**
+	 * 由 SysConfig {@code TABLE_SUPPORT_APPROVAL_FORM}（格式 {@code TableName:AD_Form_ID}，逗號分隔）
+	 * 取指定單據對應的簽核總覽 Form ID；查無對應或設定空字串時回 0（＝不顯示按鈕）。
+	 */
+	private int getApprovalFormID(int tableId) {
+		String csv = MSysConfig.getValue("TABLE_SUPPORT_APPROVAL_FORM", "");
+		if (csv == null || csv.trim().length() == 0)
+			return 0;
+		for (String pair : csv.split(",")) {
+			int sep = pair.lastIndexOf(":");
+			if (sep <= 0)
+				continue;
+			String tableName = pair.substring(0, sep).trim();
+			if (MTable.getTable_ID(tableName) != tableId)
+				continue;
+			try {
+				return Integer.parseInt(pair.substring(sep + 1).trim());
+			} catch (NumberFormatException e) {
+				log.warning("TABLE_SUPPORT_APPROVAL_FORM 設定的 AD_Form ID 非數字: " + pair);
+				return 0;
+			}
+		}
+		return 0;
+	}
+
+	/**
+	 * 開啟當前單據對應的客製簽核總覽 Form：先把單據 Record_ID 塞進 context，客製 Form 於
+	 * initForm 時讀出當初始單據。順序必須「先設 context、再 openForm」——openForm 會同步
+	 * 跑完 initForm，回傳後再設就來不及了。
+	 */
+	private void cmd_openApprovalForm() {
+		if (m_activity == null || m_approvalFormID <= 0)
+			return;
+		Env.setContext(Env.getCtx(), CTX_APPROVAL_FORM_RECORD_ID, m_activity.getRecord_ID());
+		ADForm form = ADForm.openForm(m_approvalFormID);
+		form.setAttribute(Window.MODE_KEY, form.getWindowMode());
+		AEnv.showWindow(form);
+	} // cmd_openApprovalForm
+
 	private void cmd_split() {
 		if (m_activity == null || m_splitInfoWindowID <= 0)
 			return;
