@@ -1,12 +1,15 @@
 package tw.idempiere.form;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 import org.compiere.model.MSysConfig;
 import org.compiere.util.Env;
@@ -25,6 +28,8 @@ public final class OfficeToPdf {
 
 	/** SysConfig：soffice 執行檔完整路徑。 */
 	public static final String SYSCONFIG_PATH = "LIBREOFFICE_SOFFICE_PATH";
+	/** SysConfig：LibreOffice 範本 profile 目錄（含字型替換表 registrymodifications.xcu）；未設則用全新空 profile。 */
+	public static final String SYSCONFIG_PROFILE = "LIBREOFFICE_PROFILE_TEMPLATE";
 	/** macOS 標準安裝路徑（未設 SysConfig 時的預設）。 */
 	private static final String DEFAULT_PATH = "/Applications/LibreOffice.app/Contents/MacOS/soffice";
 	/** 單次轉檔逾時（毫秒）。 */
@@ -69,6 +74,7 @@ public final class OfficeToPdf {
 			File input = new File(work.toFile(), base + "." + ext(filename));
 			Files.write(input.toPath(), data);
 			File profile = new File(work.toFile(), "profile");
+			seedProfile(profile); // 若有設定範本 profile（字型替換表），複製進來使用
 
 			ProcessBuilder pb = new ProcessBuilder(
 					soffice, "--headless", "--norestore", "--nolockcheck", "--nodefault",
@@ -102,6 +108,34 @@ public final class OfficeToPdf {
 			if (work != null) {
 				deleteQuietly(work.toFile());
 			}
+		}
+	}
+
+	/** 若 SysConfig 有設範本 profile 目錄，複製到本次轉檔的 profile（帶字型替換表）。 */
+	private static void seedProfile(File dest) {
+		String tpl = MSysConfig.getValue(SYSCONFIG_PROFILE, "", Env.getAD_Client_ID(Env.getCtx()));
+		if (tpl == null || tpl.trim().length() == 0) {
+			return;
+		}
+		File src = new File(tpl.trim());
+		if (!src.isDirectory()) {
+			log.warning("LIBREOFFICE_PROFILE_TEMPLATE 目錄不存在，改用空 profile：" + tpl);
+			return;
+		}
+		try (Stream<Path> walk = Files.walk(src.toPath())) {
+			Path from = src.toPath();
+			Path to = dest.toPath();
+			for (Path p : (Iterable<Path>) walk::iterator) {
+				Path target = to.resolve(from.relativize(p).toString());
+				if (Files.isDirectory(p)) {
+					Files.createDirectories(target);
+				} else {
+					Files.createDirectories(target.getParent());
+					Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING);
+				}
+			}
+		} catch (IOException e) {
+			log.warning("複製 profile 範本失敗，改用空 profile：" + e.getMessage());
 		}
 	}
 
