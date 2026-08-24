@@ -48,6 +48,9 @@ import org.adempiere.webui.session.SessionManager;
 import org.adempiere.webui.theme.ThemeManager;
 import org.adempiere.webui.util.ZKUpdateUtil;
 import org.adempiere.webui.window.FDialog;
+import org.adempiere.webui.Extensions;
+import org.idempiere.ui.zk.media.IMediaView;
+import org.idempiere.ui.zk.media.Medias;
 import org.compiere.model.MAttachment;
 import org.compiere.model.MAttachmentEntry;
 import org.compiere.model.MBPartner;
@@ -83,6 +86,8 @@ import org.zkoss.zk.ui.util.Clients;
 import org.zkoss.zul.Borderlayout;
 import org.zkoss.zul.Filedownload;
 import org.zkoss.zul.Center;
+import org.zkoss.zul.Combobox;
+import org.zkoss.zul.Comboitem;
 import org.zkoss.zul.North;
 import org.zkoss.zul.South;
 import org.zkoss.zul.Div;
@@ -1303,12 +1308,13 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	} // cmd_split
 
 	/**
-	 * 唯讀檢視當前單據附件：列出附件、每筆可檢視/下載；不提供新增/刪除。
+	 * 唯讀檢視當前單據附件（比照採購簽核工作台）：
+	 * 一個預覽視窗 + 上方下拉選單切換附件；可下載當前檔。不提供新增/刪除。
 	 */
 	private void cmd_attachment() {
 		if (m_activity == null)
 			return;
-		MAttachment att = MAttachment.get(Env.getCtx(), m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
+		final MAttachment att = MAttachment.get(Env.getCtx(), m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
 		if (att == null || att.getEntryCount() == 0) {
 			Clients.showNotification("無附件");
 			return;
@@ -1320,65 +1326,173 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		win.setSizable(true);
 		win.setMaximizable(true);
 		win.setBorder("normal");
-		win.setContentStyle("overflow:auto");
-		ZKUpdateUtil.setWidth(win, "480px");
+		win.setContentStyle("overflow:hidden");
+		ZKUpdateUtil.setWidth(win, "85%");
+		ZKUpdateUtil.setHeight(win, "88%");
 		win.setAttribute(Window.MODE_KEY, Window.Mode.OVERLAPPED);
 
-		Vlayout vlist = new Vlayout();
-		vlist.setStyle("padding:10px;");
-		ZKUpdateUtil.setHflex(vlist, "1");
+		Borderlayout bl = new Borderlayout();
+		ZKUpdateUtil.setHflex(bl, "1");
+		ZKUpdateUtil.setVflex(bl, "1");
+		win.appendChild(bl);
+
+		North north = new North();
+		north.setBorder("none");
+		bl.appendChild(north);
+		Hbox tb = new Hbox();
+		tb.setAlign("center");
+		tb.setSpacing("10px");
+		tb.setStyle("padding:8px 12px;");
+		north.appendChild(tb);
+		tb.appendChild(new Label("選擇附件："));
+		final Combobox combo = new Combobox();
+		// 不可設 readonly：ValidateReadonlyComponent 會攔掉 readonly 元件的 onSelect。
+		combo.setAutodrop(true);
+		ZKUpdateUtil.setWidth(combo, "440px");
 		for (int i = 0; i < att.getEntryCount(); i++) {
-			final MAttachmentEntry entry = att.getEntry(i);
-			Hbox row = new Hbox();
-			row.setAlign("center");
-			ZKUpdateUtil.setHflex(row, "1");
-			Label name = new Label((i + 1) + ". " + entry.getName());
-			ZKUpdateUtil.setHflex(name, "1");
-			Button btnView = new Button("檢視");
-			btnView.addEventListener(Events.ON_CLICK, e -> previewEntry(entry));
-			Button btnDl = new Button("下載");
-			btnDl.addEventListener(Events.ON_CLICK, e -> Filedownload
-					.save(new AMedia(entry.getName(), null, entry.getContentType(), entry.getData())));
-			row.appendChild(name);
-			row.appendChild(btnView);
-			row.appendChild(btnDl);
-			vlist.appendChild(row);
+			MAttachmentEntry e = att.getEntry(i);
+			Comboitem ci = combo.appendItem(e == null ? "" : e.getName());
+			ci.setValue(Integer.valueOf(i));
 		}
-		win.appendChild(vlist);
+		tb.appendChild(combo);
+		Button dl = new Button();
+		dl.setLabel("⬇ 下載此檔");
+		tb.appendChild(dl);
+
+		Center center = new Center();
+		center.setBorder("none");
+		center.setAutoscroll(true);
+		bl.appendChild(center);
+		final Div box = new Div();
+		ZKUpdateUtil.setWidth(box, "100%");
+		ZKUpdateUtil.setHeight(box, "100%");
+		box.setStyle("overflow:auto;");
+		center.appendChild(box);
+
+		final int[] cur = { 0 };
+		combo.addEventListener(Events.ON_SELECT, ev -> {
+			Comboitem sel = combo.getSelectedItem();
+			cur[0] = (sel == null || sel.getValue() == null) ? 0 : ((Integer) sel.getValue()).intValue();
+			previewInto(box, att.getEntry(cur[0]));
+		});
+		dl.addEventListener(Events.ON_CLICK, ev -> {
+			MAttachmentEntry e = att.getEntry(cur[0]);
+			if (e != null)
+				Filedownload.save(new AMedia(e.getName(), null, e.getContentType(), e.getData()));
+		});
+		// Word/PPT 轉 PDF 較慢，另一回合執行（先顯示轉換中遮罩）；用當前選取的附件
+		box.addEventListener("onConvertOffice", ev -> previewConvertOffice(box, att.getEntry(cur[0])));
+
+		combo.setSelectedIndex(0);
 		AEnv.showWindow(win);
+		previewInto(box, att.getEntry(0));
 	} // cmd_attachment
 
-	/**
-	 * 內嵌預覽單一附件：以 Iframe 直接 render（PDF/圖片/文字等瀏覽器可內看的型別），不下載。
-	 * PDF 不設 sandbox（內建檢視器在 sandbox 內會被封鎖），其餘型別維持完全鎖死。
-	 */
-	private void previewEntry(MAttachmentEntry entry) {
-		Window win = new Window();
-		win.setTitle(entry.getName());
-		win.setClosable(true);
-		win.setSizable(true);
-		win.setMaximizable(true);
-		win.setBorder("normal");
-		win.setContentStyle("overflow:hidden");
-		ZKUpdateUtil.setWidth(win, "80%");
-		ZKUpdateUtil.setHeight(win, "85%");
-		win.setAttribute(Window.MODE_KEY, Window.Mode.OVERLAPPED);
+	/** 依型別決定預覽方式並塞進容器。 */
+	private void previewInto(Div box, MAttachmentEntry entry) {
+		previewClear(box);
+		String name = entry.getName();
+		// 試算表：優先用核心 Keikai 原生表格（不需 LibreOffice、無 A4 分頁）
+		if (OfficeToPdf.isSpreadsheet(name) && previewSpreadsheet(box, entry)) {
+			return;
+		}
+		// Word/PPT（或 Keikai 不可用時的試算表）→ LibreOffice 轉檔
+		if (OfficeToPdf.isOffice(name)) {
+			Clients.showBusy(box, "轉換中…");
+			Events.echoEvent("onConvertOffice", box, null);
+			return;
+		}
+		// 其餘（PDF/圖片/文字/xml…）→ iframe
+		previewIframe(box, new AMedia(name, null, entry.getContentType(), entry.getData()), isPdf(entry));
+	}
 
+	/** 用核心 Keikai 媒體檢視器 render 試算表；無檢視器或失敗回 false。 */
+	private boolean previewSpreadsheet(Div box, MAttachmentEntry entry) {
+		String ext = previewExt(entry.getName());
+		String mime = previewSpreadsheetMime(ext);
+		if (mime == null) {
+			return false;
+		}
+		IMediaView view = Extensions.getMediaView(mime, ext, false);
+		if (view == null) {
+			return false;
+		}
+		try {
+			view.renderMediaView(box, new AMedia(entry.getName(), null, mime, entry.getData()), true);
+			return true;
+		} catch (Exception ex) {
+			log.warning("Keikai 預覽失敗，改用轉檔：" + entry.getName() + " -> " + ex.getMessage());
+			previewClear(box);
+			return false;
+		}
+	}
+
+	/** 於 onConvertOffice 回合執行：Word/PPT→PDF（試算表 fallback→HTML）後顯示。 */
+	private void previewConvertOffice(Div box, MAttachmentEntry entry) {
+		String name = entry.getName();
+		byte[] out = OfficeToPdf.isSpreadsheet(name)
+				? OfficeToPdf.toHtml(entry.getData(), name)
+				: OfficeToPdf.toPdf(entry.getData(), name);
+		Clients.clearBusy(box);
+		previewClear(box);
+		if (out != null && out.length > 0) {
+			String base = name;
+			int dot = base.lastIndexOf('.');
+			if (dot > 0)
+				base = base.substring(0, dot);
+			if (OfficeToPdf.isSpreadsheet(name)) {
+				previewIframe(box, new AMedia(base + ".html", "html", "text/html;charset=UTF-8",
+						new String(out, java.nio.charset.StandardCharsets.UTF_8)), false);
+			} else {
+				previewIframe(box, new AMedia(base + ".pdf", "pdf", "application/pdf", out), true);
+			}
+		} else {
+			previewIframe(box, previewFallback(
+					"無法轉檔預覽（請確認伺服器已安裝 LibreOffice），請改用「下載」開啟。"), false);
+		}
+	}
+
+	/** 在容器內放一個填滿的 iframe；非 PDF 上 sandbox 鎖死避免夾帶腳本。 */
+	private void previewIframe(Div box, AMedia media, boolean pdf) {
+		previewClear(box);
 		Iframe iframe = new Iframe();
 		ZKUpdateUtil.setWidth(iframe, "100%");
 		ZKUpdateUtil.setHeight(iframe, "100%");
-		iframe.setContent(new AMedia(entry.getName(), null, entry.getContentType(), entry.getData()));
-		// 依型別決定 sandbox：
-		// - PDF 完全不設 sandbox。Chrome 的內建 PDF 檢視器（PDFium MimeHandler）在 sandbox
-		//   iframe 內會被直接封鎖（ERR_BLOCKED_BY_RESPONSE），即使加 allow-scripts allow-same-origin
-		//   也擋；故對 PDF 不沙箱化。PDF 內的 JS 由 PDFium 在其受限環境執行，碰不到本頁 DOM/連線，
-		//   風險可接受。
-		// - 其餘型別維持完全鎖死，避免附件夾帶腳本。
-		if (!isPdf(entry))
+		iframe.setContent(media);
+		// PDF 不設 sandbox（PDFium 檢視器在 sandbox 內會被封鎖）；其餘型別鎖死。
+		if (!pdf)
 			iframe.setClientAttribute("sandbox", "");
-		win.appendChild(iframe);
-		AEnv.showWindow(win);
-	} // previewEntry
+		box.appendChild(iframe);
+	}
+
+	private void previewClear(Div box) {
+		while (box.getFirstChild() != null)
+			box.getFirstChild().detach();
+	}
+
+	private static String previewExt(String name) {
+		String n = (name == null) ? "" : name;
+		int dot = n.lastIndexOf('.');
+		return (dot >= 0) ? n.substring(dot + 1).toLowerCase() : "";
+	}
+
+	private static String previewSpreadsheetMime(String ext) {
+		if ("xls".equals(ext))
+			return Medias.EXCEL_MIME_TYPE;
+		if ("xlsx".equals(ext))
+			return Medias.EXCEL_XML_MIME_TYPE;
+		if ("csv".equals(ext))
+			return Medias.CSV_MIME_TYPE;
+		return null;
+	}
+
+	private static AMedia previewFallback(String msg) {
+		String html = "<!doctype html><html><body style=\"margin:0;"
+				+ "font-family:'Microsoft JhengHei',sans-serif;color:#475569;"
+				+ "display:flex;align-items:center;justify-content:center;height:100vh;"
+				+ "text-align:center;padding:24px;line-height:1.8;\">" + msg + "</body></html>";
+		return new AMedia("preview.html", "html", "text/html", html);
+	}
 
 	/** 是否為 PDF：先看 contentType，再以副檔名兜底（部分附件未存正確 MIME）。 */
 	private boolean isPdf(MAttachmentEntry entry) {
