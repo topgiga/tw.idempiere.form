@@ -146,6 +146,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Button bApprovalForm = new Button(); // 簽核總覽：依 SysConfig TABLE_SUPPORT_APPROVAL_FORM 對應的單據才顯示
 	private int m_approvalFormID = 0; // 目前單據對應的簽核總覽 AD_Form（0=不顯示）
 	private Boolean m_hasApprovalFormPerm = null; // 當前登入者是否登記於 TG_PurchaseFormPermission（null=未查，session 內快取）
+	private Button bAcceptance = new Button(); // 驗收：M_Movement(單別1000100) 待簽時顯示，開驗收表單（不走權限表，全員可用）
+	private int m_acceptanceFormID = 0; // 目前驗收表單 AD_Form（0=不顯示）
+	private Button bForward = new Button(); // 轉發：驗收調撥單隱藏確定鈕後，改用此鈕執行 forward-only
+	private Grid gridAction; // 動作區 Grid；切換元件 visibility 後供 invalidate 重繪，避免首次顯示跑版
+	private Row rowAction2; // Comment 列；驗收調撥單時隱藏（留言改在驗收 Form 內填）
+	private static final int DOCTYPE_INSPECTION_MOVEMENT = 1000100; // 驗收調撥單單別
 	// 外部客製 Form 用來接收帶入單據 Record_ID 的 context key（與 PurchaseApprovalForm.CTX_RECORD_ID 對齊；
 	// 因本 bundle 未依賴 tw.topgiga.purchase，故以字面值維持解耦）
 	private static final String CTX_APPROVAL_FORM_RECORD_ID = "#WB_Record_ID";
@@ -221,6 +227,24 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		else
 			bApprovalForm.setImage(ThemeManager.getThemeResource("images/Info16.png"));
 		bApprovalForm.setVisible(false);
+
+		// 驗收按鈕：預設隱藏，由 display() 依當前單據是否為驗收調撥單決定顯示（全員可用，不走權限表）
+		bAcceptance.setLabel("驗收");
+		bAcceptance.addEventListener(Events.ON_CLICK, this);
+		if (ThemeManager.isUseFontIconForImage())
+			bAcceptance.setIconSclass("z-icon-Ok");
+		else
+			bAcceptance.setImage(ThemeManager.getThemeResource("images/Ok16.png"));
+		bAcceptance.setVisible(false);
+
+		// 轉發按鈕：預設隱藏，僅驗收調撥單顯示（隱藏確定鈕後仍可轉發）
+		bForward.setLabel(Msg.getMsg(Env.getCtx(), "Forward"));
+		bForward.addEventListener(Events.ON_CLICK, this);
+		if (ThemeManager.isUseFontIconForImage())
+			bForward.setIconSclass("z-icon-Forward");
+		else
+			bForward.setImage(ThemeManager.getThemeResource("images/Forward16.png"));
+		bForward.setVisible(false);
 
 		m_userLookup = MLookupFactory.get(Env.getCtx(), m_WindowNo,
 				0, 10443, DisplayType.Search);
@@ -378,7 +402,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		gbAction.appendChild(new Caption(Msg.translate(Env.getCtx(), "Action")));
 		gbAction.setMold("3d");
 
-		Grid gridAction = new Grid();
+		gridAction = new Grid();
 		gridAction.makeNoStrip();
 		gridAction.setOddRowSclass("even");
 		ZKUpdateUtil.setWidth(gridAction, "100%");
@@ -405,6 +429,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		hboxAnswer.appendChild(bAttachment);
 		hboxAnswer.appendChild(new Separator("vertical"));
 		hboxAnswer.appendChild(bApprovalForm);
+		hboxAnswer.appendChild(new Separator("vertical"));
+		hboxAnswer.appendChild(bAcceptance);
 		rowAction1.appendChild(hboxAnswer);
 		rowAction1.appendChild(new Label());
 		rowsAction.appendChild(rowAction1);
@@ -425,7 +451,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		rowsAction.appendChild(rowActionCs);
 
 		// Row 2: Comment
-		Row rowAction2 = new Row();
+		rowAction2 = new Row();
 		rowAction2.appendChild(lTextMsg);
 		rowAction2.appendChild(fTextMsg);
 		ZKUpdateUtil.setHflex(fTextMsg, "true");
@@ -441,6 +467,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		hboxForward.setHflex("1");
 		hboxForward.setAlign("center");
 		hboxForward.appendChild(fForward.getComponent());
+		hboxForward.appendChild(new Separator("vertical"));
+		hboxForward.appendChild(bForward);
 		hboxForward.appendChild(new Separator("vertical"));
 		hboxForward.appendChild(lOptional);
 		rowAction3.appendChild(hboxForward);
@@ -492,6 +520,10 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				cmd_attachment();
 			} else if (comp == bApprovalForm) {
 				cmd_openApprovalForm();
+			} else if (comp == bAcceptance) {
+				cmd_openAcceptanceForm();
+			} else if (comp == bForward) {
+				cmd_forward();
 			} else if (comp == fAnswerButton)
 
 				cmd_button();
@@ -611,7 +643,15 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				PO po = activity.getPO();
 				if (po != null) {
 					int userID = 0;
-					String userCol = "C_Order".equals(po.get_TableName()) ? "SalesRep_ID" : "AD_User_ID";
+					// 簽核人欄位：C_Order→SalesRep_ID、M_Movement(驗收調撥單)→AD_User_To_ID、其餘→AD_User_ID
+					String userCol;
+					String tblName = po.get_TableName();
+					if ("C_Order".equals(tblName))
+						userCol = "SalesRep_ID";
+					else if ("M_Movement".equals(tblName))
+						userCol = "AD_User_To_ID";
+					else
+						userCol = "AD_User_ID";
 					int idx = po.get_ColumnIndex(userCol);
 					if (idx >= 0) {
 						Object val = po.get_Value(idx);
@@ -886,12 +926,21 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		fTextMsg.setReadonly(!(selIndex >= 0));
 		bZoom.setEnabled(selIndex >= 0);
 		bOK.setEnabled(selIndex >= 0);
+		// 確定鈕預設顯示、轉發鈕預設隱藏，由 display() 視當前單據決定（驗收調撥單會反過來）
+		bOK.setVisible(true);
+		bForward.setVisible(false);
+		// Comment 列預設顯示，驗收調撥單於 display() 隱藏
+		if (rowAction2 != null)
+			rowAction2.setVisible(true);
 		// 拆單按鈕預設隱藏，由 display() 視當前單據決定
 		bSplit.setVisible(false);
 		m_splitInfoWindowID = 0;
 		// 簽核總覽按鈕預設隱藏，由 display() 視當前單據決定
 		bApprovalForm.setVisible(false);
 		m_approvalFormID = 0;
+		// 驗收按鈕預設隱藏，由 display() 視當前單據決定
+		bAcceptance.setVisible(false);
+		m_acceptanceFormID = 0;
 		// 附件按鈕預設停用，由 display() 依附件數啟用
 		bAttachment.setLabel("附件");
 		bAttachment.setDisabled(true);
@@ -1000,6 +1049,25 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		// 有登記在 TG_PurchaseFormPermission 權限表時，才顯示按鈕
 		m_approvalFormID = getApprovalFormID(m_activity.getAD_Table_ID());
 		bApprovalForm.setVisible(m_approvalFormID > 0 && hasApprovalFormPermission());
+
+		// 驗收：當前單據為驗收調撥單（M_Movement 單別 1000100）且非會簽 node 時顯示（全員可用）
+		m_acceptanceFormID = getAcceptanceFormID(m_activity);
+		bAcceptance.setVisible(m_acceptanceFormID > 0 && !isCountersignNode);
+
+		// 驗收調撥單：簽核改由「驗收」按鈕，隱藏原生同意/駁回欄與確定鈕；轉發保留（改用轉發鈕執行）
+		if (m_acceptanceFormID > 0) {
+			fAnswerText.setVisible(false);
+			fAnswerList.setVisible(false);
+			fAnswerButton.setVisible(false);
+			bOK.setVisible(false);
+			bForward.setVisible(true);
+			// Comment 列隱藏（留言改在驗收 Form 內填）
+			if (rowAction2 != null)
+				rowAction2.setVisible(false);
+			// 首次顯示切換 visibility 後強制動作區重繪，避免跑版
+			if (gridAction != null)
+				gridAction.invalidate();
+		}
 
 		// 附件：有附件才啟用，並在標籤標數量
 		MAttachment att = MAttachment.get(Env.getCtx(), m_activity.getAD_Table_ID(), m_activity.getRecord_ID());
@@ -1272,6 +1340,84 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		form.setAttribute(Window.MODE_KEY, form.getWindowMode());
 		AEnv.showWindow(form);
 	} // cmd_openApprovalForm
+
+	/**
+	 * 取驗收表單 AD_Form ID：僅當前單據為 M_Movement 且單別＝驗收調撥單(1000100)時，
+	 * 回傳 SysConfig {@code MOVEMENT_ACCEPTANCE_FORM_ID}；否則 0（＝不顯示）。全員可用，不走權限表。
+	 */
+	private int getAcceptanceFormID(MWFActivity activity) {
+		if (activity == null || activity.getAD_Table_ID() != MTable.getTable_ID("M_Movement"))
+			return 0;
+		int docTypeId = DB.getSQLValue(null,
+				"SELECT C_DocType_ID FROM M_Movement WHERE M_Movement_ID=?", activity.getRecord_ID());
+		if (docTypeId != DOCTYPE_INSPECTION_MOVEMENT)
+			return 0;
+		return MSysConfig.getIntValue("MOVEMENT_ACCEPTANCE_FORM_ID", 0);
+	}
+
+	/** 開啟驗收表單：以模態彈窗顯示（不另開分頁）。先把 M_Movement_ID 塞進 context，客製 Form 於 initForm 讀出當初始單據。 */
+	private void cmd_openAcceptanceForm() {
+		if (m_activity == null || m_acceptanceFormID <= 0)
+			return;
+		Env.setContext(Env.getCtx(), CTX_APPROVAL_FORM_RECORD_ID, m_activity.getRecord_ID());
+		ADForm form = ADForm.openForm(m_acceptanceFormID);
+		// 以模態彈窗顯示（比照 ZkReportViewer.cmd_Wizard）：關鍵是字串常數 MODE_HIGHLIGHTED
+		form.setClosable(true);
+		form.setWidth("75%");
+		form.setHeight("75%");
+		form.setAttribute(Window.MODE_KEY, Window.MODE_HIGHLIGHTED);
+		AEnv.showWindow(form);
+		// 驗收送出成功後，表單 VM 會 post "onAcceptanceSubmitted" 事件 → 關閉彈窗並刷新簽核清單
+		final ADForm acceptanceForm = form;
+		form.addEventListener("onAcceptanceSubmitted", new EventListener<Event>() {
+			@Override
+			public void onEvent(Event e) {
+				acceptanceForm.detach();
+				loadActivities();
+			}
+		});
+	} // cmd_openAcceptanceForm
+
+	/**
+	 * 轉發（forward-only）：驗收調撥單隱藏確定鈕後，改用此鈕把待簽活動轉給他人。
+	 * 只做 forward，不做同意/駁回（核准請走「驗收」按鈕）。
+	 */
+	private void cmd_forward() {
+		if (m_activity == null)
+			return;
+		Object forward = fForward.getValue();
+		if (forward == null) {
+			FDialog.error(m_WindowNo, this, "FillMandatory", Msg.getMsg(Env.getCtx(), "Forward"));
+			return;
+		}
+		int fw = ((Integer) forward).intValue();
+		int AD_User_ID = Env.getAD_User_ID(Env.getCtx());
+		if (fw == AD_User_ID || fw == 0) {
+			FDialog.error(m_WindowNo, this, "CannotForward");
+			return;
+		}
+		String textMsg = applyDelegateTag(m_activity, fTextMsg.getValue());
+		Trx trx = Trx.get(Trx.createTrxName(m_activity.get_TrxName()), true);
+		trx.setDisplayName(getClass().getName() + "_forward");
+		try {
+			m_activity.set_TrxName(trx.getTrxName());
+			if (!m_activity.forwardTo(fw, textMsg)) {
+				FDialog.error(m_WindowNo, this, "CannotForward");
+				trx.rollback();
+				return;
+			}
+			trx.commit();
+		} catch (Exception e) {
+			log.log(Level.SEVERE, "forward failed", e);
+			FDialog.error(m_WindowNo, this, "Error", e.toString());
+			trx.rollback();
+			return;
+		} finally {
+			trx.close();
+		}
+		loadActivities();
+		display(-1);
+	} // cmd_forward
 
 	private void cmd_split() {
 		if (m_activity == null || m_splitInfoWindowID <= 0)
