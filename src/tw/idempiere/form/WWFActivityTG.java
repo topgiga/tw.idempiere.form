@@ -151,6 +151,10 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Button bForward = new Button(); // 轉發：驗收調撥單隱藏確定鈕後，改用此鈕執行 forward-only
 	private Grid gridAction; // 動作區 Grid；切換元件 visibility 後供 invalidate 重繪，避免首次顯示跑版
 	private Row rowAction2; // Comment 列；驗收調撥單時隱藏（留言改在驗收 Form 內填）
+	private Hbox hboxForward; // 轉發區（編輯器＋轉發鈕）；會簽節點隱藏（會簽人只有同意/否決）
+	private Hbox hboxAnswer; // 回覆列動作區；會簽節點時把確定鈕搬到此（附件右邊）
+	private Hbox hboxOK; // 確定＋部分簽核；一般節點確定鈕在此
+	private Row rowAction3; // Forward＋確定 列；會簽節點時整列隱藏（確定鈕已搬到回覆列）
 	private static final int DOCTYPE_INSPECTION_MOVEMENT = 1000100; // 驗收調撥單單別
 	// 外部客製 Form 用來接收帶入單據 Record_ID 的 context key（與 PurchaseApprovalForm.CTX_RECORD_ID 對齊；
 	// 因本 bundle 未依賴 tw.topgiga.purchase，故以字面值維持解耦）
@@ -413,7 +417,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		// Row 1: Answer
 		Row rowAction1 = new Row();
 		rowAction1.appendChild(lAnswer);
-		Hbox hboxAnswer = new Hbox();
+		hboxAnswer = new Hbox();
 		hboxAnswer.setHflex("1");
 		hboxAnswer.setAlign("center");
 		hboxAnswer.appendChild(fAnswerText);
@@ -461,9 +465,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		rowsAction.appendChild(rowAction2);
 
 		// Row 3: Forward & Process
-		Row rowAction3 = new Row();
+		rowAction3 = new Row();
 		rowAction3.appendChild(lForward);
-		Hbox hboxForward = new Hbox();
+		hboxForward = new Hbox();
 		hboxForward.setHflex("1");
 		hboxForward.setAlign("center");
 		hboxForward.appendChild(fForward.getComponent());
@@ -477,7 +481,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		bOK.addEventListener(Events.ON_CLICK, this);
 		// Reset styling just in case
 		bOK.setStyle(null);
-		Hbox hboxOK = new Hbox();
+		hboxOK = new Hbox();
 		hboxOK.setAlign("center");
 		hboxOK.appendChild(bOK);
 		hboxOK.appendChild(new Separator("vertical"));
@@ -946,6 +950,13 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		bAttachment.setDisabled(true);
 		fForward.setValue(null);
 		fForward.setReadWrite(selIndex >= 0);
+		// 轉發區預設顯示，由 display() 視節點決定（會簽節點隱藏）
+		lForward.setVisible(true);
+		if (hboxForward != null)
+			hboxForward.setVisible(true);
+		// Forward＋確定 列預設顯示，由 display() 視節點決定（會簽節點隱藏，確定鈕改在回覆列）
+		if (rowAction3 != null)
+			rowAction3.setVisible(true);
 		// 會簽指定區塊預設隱藏並清空，由 display() 視節點決定是否顯示
 		rowActionCs.setVisible(false);
 		if (fCsUsers != null)
@@ -1033,8 +1044,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		} else
 			log.log(Level.SEVERE, "Unknown Node Action: " + node.getAction());
 
-		// 此節點同意後會進會簽 node → 顯示會簽指定（人/角色）
-		if (leadsToCountersign(node)) {
+		// 驗收：當前單據為驗收調撥單（M_Movement 單別 1000100）時 > 0（先算，供選人框判斷用）
+		m_acceptanceFormID = getAcceptanceFormID(m_activity);
+
+		// 此節點同意後會進會簽 node → 顯示會簽指定（人/角色）。
+		// 但驗收調撥單例外：會簽人員/角色改在驗收 Form 內指定，主畫面不顯示選人框。
+		if (leadsToCountersign(node) && m_acceptanceFormID <= 0) {
 			populateCountersignPickers();
 			rowActionCs.setVisible(true);
 		}
@@ -1050,12 +1065,33 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		m_approvalFormID = getApprovalFormID(m_activity.getAD_Table_ID());
 		bApprovalForm.setVisible(m_approvalFormID > 0 && hasApprovalFormPermission());
 
-		// 驗收：當前單據為驗收調撥單（M_Movement 單別 1000100）且非會簽 node 時顯示（全員可用）
-		m_acceptanceFormID = getAcceptanceFormID(m_activity);
+		// 驗收：當前單據為驗收調撥單（M_Movement 單別 1000100）且非會簽 node 時顯示（全員可用）；
+		// m_acceptanceFormID 已於上方（選人框判斷前）計算
 		bAcceptance.setVisible(m_acceptanceFormID > 0 && !isCountersignNode);
 
-		// 驗收調撥單：簽核改由「驗收」按鈕，隱藏原生同意/駁回欄與確定鈕；轉發保留（改用轉發鈕執行）
-		if (m_acceptanceFormID > 0) {
+		// 會簽節點：會簽人只有同意/否決，隱藏整個轉發區（含轉發輸入欄與轉發鈕），
+		// 並把確定鈕搬到「附件」右邊（回覆列），避免它獨佔一列顯得突兀。
+		if (isCountersignNode) {
+			lForward.setVisible(false);
+			if (hboxForward != null)
+				hboxForward.setVisible(false);
+			if (hboxAnswer != null && bOK.getParent() != hboxAnswer)
+				hboxAnswer.insertBefore(bOK, bAttachment.getNextSibling());
+			// 確定鈕已搬到回覆列，Forward＋確定 列整列隱藏，避免留下空白列
+			if (rowAction3 != null)
+				rowAction3.setVisible(false);
+			// 搬動元件＋切換列 visibility 後強制動作區重繪，避免跑版
+			if (gridAction != null)
+				gridAction.invalidate();
+		} else {
+			// 其他節點：確定鈕還原回原本位置（部分簽核鈕左邊）
+			if (hboxOK != null && bOK.getParent() != hboxOK)
+				hboxOK.insertBefore(bOK, hboxOK.getFirstChild());
+		}
+
+		// 驗收調撥單：簽核改由「驗收」按鈕，隱藏原生同意/駁回欄與確定鈕；轉發保留（改用轉發鈕執行）。
+		// 但會簽節點例外：會簽人需保留原生同意/駁回＋確定鈕（走 onOK），不套用此驗收 UI 改寫。
+		if (m_acceptanceFormID > 0 && !isCountersignNode) {
 			fAnswerText.setVisible(false);
 			fAnswerList.setVisible(false);
 			fAnswerButton.setVisible(false);
