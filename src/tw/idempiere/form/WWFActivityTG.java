@@ -1409,7 +1409,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			@Override
 			public void onEvent(Event e) {
 				acceptanceForm.detach();
+				// 重載清單並重置明細區，避免殘留剛驗收完的單據讓使用者再按驗收
 				loadActivities();
+				display(-1);
 			}
 		});
 	} // cmd_openAcceptanceForm
