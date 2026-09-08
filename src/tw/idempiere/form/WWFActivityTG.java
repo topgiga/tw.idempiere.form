@@ -1377,9 +1377,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		AEnv.showWindow(form);
 	} // cmd_openApprovalForm
 
+	/** 驗收表單類別全名（依此查 AD_Form.Classname 取得 AD_Form_ID，免維護 SysConfig）。 */
+	private static final String ACCEPTANCE_FORM_CLASSNAME = "tw.ninniku.mrp.form.WMovementAcceptanceForm";
+
 	/**
 	 * 取驗收表單 AD_Form ID：僅當前單據為 M_Movement 且單別＝驗收調撥單(1000100)時，
-	 * 回傳 SysConfig {@code MOVEMENT_ACCEPTANCE_FORM_ID}；否則 0（＝不顯示）。全員可用，不走權限表。
+	 * 依 Form 類別全名查 AD_Form.Classname 取得 AD_Form_ID；否則 0（＝不顯示）。全員可用，不走權限表。
 	 */
 	private int getAcceptanceFormID(MWFActivity activity) {
 		if (activity == null || activity.getAD_Table_ID() != MTable.getTable_ID("M_Movement"))
@@ -1388,7 +1391,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				"SELECT C_DocType_ID FROM M_Movement WHERE M_Movement_ID=?", activity.getRecord_ID());
 		if (docTypeId != DOCTYPE_INSPECTION_MOVEMENT)
 			return 0;
-		return MSysConfig.getIntValue("MOVEMENT_ACCEPTANCE_FORM_ID", 0);
+		return DB.getSQLValueEx(null,
+				"SELECT AD_Form_ID FROM AD_Form WHERE Classname=? AND IsActive='Y' ORDER BY AD_Form_ID",
+				ACCEPTANCE_FORM_CLASSNAME);
 	}
 
 	/** 開啟驗收表單：以模態彈窗顯示（不另開分頁）。先把 M_Movement_ID 塞進 context，客製 Form 於 initForm 讀出當初始單據。 */
