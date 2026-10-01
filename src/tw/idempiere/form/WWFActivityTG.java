@@ -140,6 +140,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Textbox fTextMsg = new Textbox();
 	private Button bOK = new Button();
 	private Toolbarbutton bBatchApprove = new Toolbarbutton(); // Batch Approve
+	private Toolbarbutton bRefresh = new Toolbarbutton(); // 重新整理：重載待簽清單，免重開畫面
 	private Button bSplit = new Button(); // 拆單：依 SysConfig TABLE_SUPPORT_SPLIT 對應的單據才顯示
 	private int m_splitInfoWindowID = 0; // 目前單據對應的拆單 Info Window（0=不顯示）
 	private Button bAttachment = new Button(); // 唯讀檢視當前單據附件；依附件數啟用
@@ -176,7 +177,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private ListModelTable model = null;
 	private WListbox listbox = new WListbox();
 
-	private final static String HISTORY_DIV_START_TAG = "<div style='min-height: 100px; max-height: 320px; overflow: auto; border: 1px solid #7F9DB9;'>";
+	private final static String HISTORY_DIV_START_TAG = "<div style='min-height: 120px; max-height: 560px; overflow: auto; border: 1px solid #7F9DB9; padding: 8px;'>";
 
 	public WWFActivityTG() {
 		super();
@@ -204,6 +205,14 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			bBatchApprove.setIconSclass("z-icon-Process");
 		else
 			bBatchApprove.setImage(ThemeManager.getThemeResource("images/Process16.png"));
+
+		// 重新整理：重載待簽清單，有新簽核資訊免重開畫面
+		bRefresh.setLabel(Msg.getMsg(Env.getCtx(), "Refresh"));
+		bRefresh.addEventListener(Events.ON_CLICK, this);
+		if (ThemeManager.isUseFontIconForImage())
+			bRefresh.setIconSclass("z-icon-Refresh");
+		else
+			bRefresh.setImage(ThemeManager.getThemeResource("images/Refresh16.png"));
 
 		// 部分簽核按鈕：預設隱藏，由 display() 依當前單據是否在 TABLE_SUPPORT_SPLIT 白名單決定顯示
 		bSplit.setLabel("部分簽核");
@@ -307,6 +316,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 
 		Label space = new Label(" ");
 		toolbar.appendChild(space);
+		toolbar.appendChild(bRefresh);
 		toolbar.appendChild(bBatchApprove);
 
 		// Motto
@@ -342,6 +352,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		Groupbox gbInfo = new Groupbox();
 		gbInfo.appendChild(new Caption(Msg.translate(Env.getCtx(), "Workflow")));
 		gbInfo.setMold("3d");
+		gbInfo.setOpen(false); // 預設收合：節點/描述/幫助較少看，點標題展開
 
 		Grid gridInfo = new Grid();
 		gridInfo.makeNoStrip();
@@ -384,22 +395,21 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		rowsInfo.appendChild(rowInfo3);
 
 		gbInfo.appendChild(gridInfo);
-		centerLayout.appendChild(gbInfo);
+		// 注意：gbInfo（Workflow）改到最下方才 append，見 center.appendChild 之前
 
 		// Group 2: History & Message
 		Groupbox gbHistory = new Groupbox();
-		gbHistory.appendChild(new Caption("Abstract Message"));
+		gbHistory.appendChild(new Caption("單據資訊"));
 		gbHistory.setMold("3d");
 
 		ZKUpdateUtil.setWidth(fHistory, "100%");
-		ZKUpdateUtil.setHeight(fHistory, "150px");
 		Div divHistory = new Div();
-		divHistory.setStyle("overflow: auto; border: 1px solid #ccc; background: white; padding: 5px;");
-		divHistory.setHeight("150px");
+		// 外層只當容器：不設固定高、不加邊框（捲動與邊框由內層 HISTORY_DIV_START_TAG 負責），
+		// 避免「框中框」與內容較短時下方留白。字體放大、行距放寬讓資訊多時更好讀。
+		divHistory.setStyle("background: white; font-size: 14px; line-height: 1.6;");
 		divHistory.appendChild(fHistory);
 		gbHistory.appendChild(divHistory);
-
-		centerLayout.appendChild(gbHistory);
+		// 注意：gbHistory（Abstract Message）改到動作區之後才 append，見下方 gbAction 之後
 
 		// Group 3: Actions
 		Groupbox gbAction = new Groupbox();
@@ -493,6 +503,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		gbAction.appendChild(gridAction);
 		centerLayout.appendChild(gbAction);
 
+		// 動作區移到 Abstract Message 上方：此處才 append gbHistory
+		centerLayout.appendChild(gbHistory);
+
+		// Workflow 移到最下方
+		centerLayout.appendChild(gbInfo);
+
 		center.appendChild(centerLayout);
 		layout.appendChild(center);
 
@@ -518,6 +534,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				Events.echoEvent("onOK", this, null);
 			} else if (comp == bBatchApprove) {
 				cmd_batchApprove();
+			} else if (comp == bRefresh) {
+				loadActivities();
+				display(-1);
 			} else if (comp == bSplit) {
 				cmd_split();
 			} else if (comp == bAttachment) {
@@ -750,6 +769,11 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 
 		renderer.addTableValueChangeListener(listbox);
 		model.setNoColumns(columns.length);
+		// ListModelTable(=ListModelList) 自帶 multiple 旗標，預設 false；
+		// ZK Listbox.setModel() 會依 model 的 multiple 同步 listbox 的多選狀態。
+		// 每次重載都 new 一個 model（multiple=false），若不先設 true，setModel 會把
+		// listbox 拉回單選，和後面的 setMultiple(true) 打架，造成多選/單選勾交替跳動。
+		model.setMultiple(true);
 		listbox.setModel(model);
 		listbox.setItemRenderer(renderer);
 		listbox.setMultiple(true);
