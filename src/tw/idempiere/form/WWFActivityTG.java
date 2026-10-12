@@ -138,6 +138,10 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Button bZoom = new Button();
 	private Label lTextMsg = new Label(Msg.getMsg(Env.getCtx(), "Comment"));
 	private Textbox fTextMsg = new Textbox();
+	// Confirmer Check 節點專用：純確認節點用「備註資訊」取代留言，內容寫回單據 Comments 欄位
+	private Label lConfirmNote = new Label("備註資訊");
+	private Textbox fConfirmNote = new Textbox();
+	private Row rowActionNote; // 備註資訊 列；僅 Confirmer Check 節點顯示
 	private Button bOK = new Button();
 	private Toolbarbutton bBatchApprove = new Toolbarbutton(); // Batch Approve
 	private Toolbarbutton bRefresh = new Toolbarbutton(); // 重新整理：重載待簽清單，免重開畫面
@@ -164,6 +168,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Label lForward = new Label(Msg.getMsg(Env.getCtx(), "Forward"));
 	private Label lOptional = new Label("(" + Msg.translate(Env.getCtx(), "Optional") + ")");
 	private MLookup m_userLookup = null; // 同轉發的使用者來源（供會簽人多選清單）
+
+	// 純確認節點：依「節點名稱」判定（確認而非核決）。隱藏留言與轉發，改填「備註資訊」寫回單據 Comments。
+	private static final String NODE_NAME_CONFIRMER_CHECK = "Confirmer Check";
 
 	// 會簽指定（僅在「同意後會進會簽節點」時顯示）
 	private static final String NODE_VALUE_COUNTERSIGN = "CounterSign";
@@ -473,6 +480,17 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		fTextMsg.setRows(2);
 		rowAction2.appendChild(new Label());
 		rowsAction.appendChild(rowAction2);
+
+		// Row 2.5: 備註資訊（僅 Confirmer Check 純確認節點顯示；寫回單據 Comments 欄位）
+		rowActionNote = new Row();
+		rowActionNote.appendChild(lConfirmNote);
+		rowActionNote.appendChild(fConfirmNote);
+		ZKUpdateUtil.setHflex(fConfirmNote, "true");
+		fConfirmNote.setMultiline(true);
+		fConfirmNote.setRows(2);
+		rowActionNote.appendChild(new Label());
+		rowActionNote.setVisible(false);
+		rowsAction.appendChild(rowActionNote);
 
 		// Row 3: Forward & Process
 		rowAction3 = new Row();
@@ -960,6 +978,11 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		// Comment 列預設顯示，驗收調撥單於 display() 隱藏
 		if (rowAction2 != null)
 			rowAction2.setVisible(true);
+		// 備註資訊列預設隱藏並清空，由 display() 視節點（Confirmer Check）決定是否顯示
+		if (rowActionNote != null)
+			rowActionNote.setVisible(false);
+		if (fConfirmNote != null)
+			fConfirmNote.setValue("");
 		// 拆單按鈕預設隱藏，由 display() 視當前單據決定
 		bSplit.setVisible(false);
 		m_splitInfoWindowID = 0;
@@ -1125,6 +1148,26 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			if (rowAction2 != null)
 				rowAction2.setVisible(false);
 			// 首次顯示切換 visibility 後強制動作區重繪，避免跑版
+			if (gridAction != null)
+				gridAction.invalidate();
+		}
+
+		// Confirmer Check 純確認節點：保留節點原本的同意/否決與確定鈕，但隱藏留言與轉發，
+		// 改以「備註資訊」列填寫（內容於 onOK 寫回單據 Comments 欄位）。驗收調撥單不套用此改寫。
+		if (NODE_NAME_CONFIRMER_CHECK.equals(node.getName()) && m_acceptanceFormID <= 0) {
+			// 隱藏留言列並清空（此節點不使用留言，避免殘留內容寫進簽核留痕）
+			if (rowAction2 != null)
+				rowAction2.setVisible(false);
+			if (fTextMsg != null)
+				fTextMsg.setValue("");
+			// 隱藏轉發（輸入欄＋轉發鈕），保留確定鈕於 Forward＋確定 列
+			lForward.setVisible(false);
+			if (hboxForward != null)
+				hboxForward.setVisible(false);
+			// 顯示備註資訊列
+			if (rowActionNote != null)
+				rowActionNote.setVisible(true);
+			// 切換 visibility 後強制動作區重繪，避免跑版
 			if (gridAction != null)
 				gridAction.invalidate();
 		}
@@ -1790,6 +1833,31 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			// m_activity.set_TrxName(trx.getTrxName());
 			trx = Trx.get(Trx.createTrxName(m_activity.get_TrxName()), true);
 			trx.setDisplayName(getClass().getName() + "_onOK");
+
+			// Confirmer Check 純確認節點：把「備註資訊」寫回單據本身的 Comments 欄位。
+			// 必須用「獨立交易」立刻 commit（trxName=null → saveEx 自建 trx 並 commit），
+			// 不可掛在下方簽核 trx 上：否則本交易未 commit 前先鎖住單據列，稍後 setUserChoice
+			// 以另一條交易處理同一張單據會互等該鎖 → 死鎖，畫面一直卡在「處理中」轉圈。
+			if (NODE_NAME_CONFIRMER_CHECK.equals(node.getName())) {
+				try {
+					PO doc = MTable.get(Env.getCtx(), m_activity.getAD_Table_ID())
+							.getPO(m_activity.getRecord_ID(), null);
+					if (doc != null && doc.get_ColumnIndex("Comments") >= 0) {
+						doc.set_ValueOfColumn("Comments",
+								fConfirmNote != null ? fConfirmNote.getValue() : null);
+						doc.saveEx(); // trxName=null：立即 commit，釋放列鎖後再進行簽核
+					} else if (doc != null) {
+						log.warning("單據 " + doc.get_TableName() + " 無 Comments 欄位，略過備註資訊寫入");
+					}
+				} catch (Exception e) {
+					log.log(Level.SEVERE, "寫入備註資訊(Comments)失敗", e);
+					FDialog.error(m_WindowNo, this, "Error", e.toString());
+					trx.rollback();
+					trx.close();
+					return;
+				}
+			}
+
 			if (forward != null) {
 				if (log.isLoggable(Level.CONFIG))
 					log.config("Forward to " + forward);
