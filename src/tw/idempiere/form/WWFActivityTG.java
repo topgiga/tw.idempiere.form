@@ -24,6 +24,7 @@ import java.util.logging.Level;
 
 import org.adempiere.webui.LayoutUtils;
 import org.adempiere.webui.apps.AEnv;
+import org.adempiere.webui.apps.ProcessModalDialog;
 import org.adempiere.webui.component.Button;
 import org.adempiere.webui.component.Grid;
 import org.adempiere.webui.component.Label;
@@ -153,6 +154,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private Boolean m_hasApprovalFormPerm = null; // 當前登入者是否登記於 TG_PurchaseFormPermission（null=未查，session 內快取）
 	private Button bAcceptance = new Button(); // 驗收：M_Movement(單別1000100) 待簽時顯示，開驗收表單（不走權限表，全員可用）
 	private int m_acceptanceFormID = 0; // 目前驗收表單 AD_Form（0=不顯示）
+	private Button bPrint = new Button(); // 預覽：依 SysConfig TABLE_SUPPORT_PRINT 對應的單據＋角色視窗權限才顯示，開 Process 參數框跑 Jasper 報表預覽
+	private int m_printProcessID = 0; // 目前單據對應的列印報表 Process（0=不顯示）
+	private static final int PREVIEW_WINDOW_ID = 1000365; // 預覽鈕權限視窗：登入角色無此視窗讀取權限則不顯示預覽鈕
 	private Button bForward = new Button(); // 轉發：驗收調撥單隱藏確定鈕後，改用此鈕執行 forward-only
 	private Grid gridAction; // 動作區 Grid；切換元件 visibility 後供 invalidate 重繪，避免首次顯示跑版
 	private Row rowAction2; // Comment 列；驗收調撥單時隱藏（留言改在驗收 Form 內填）
@@ -256,6 +260,15 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		else
 			bAcceptance.setImage(ThemeManager.getThemeResource("images/Ok16.png"));
 		bAcceptance.setVisible(false);
+
+		// 預覽按鈕：預設隱藏，由 display() 依當前單據是否在 TABLE_SUPPORT_PRINT 白名單＋角色視窗權限決定顯示
+		bPrint.setLabel("預覽");
+		bPrint.addEventListener(Events.ON_CLICK, this);
+		if (ThemeManager.isUseFontIconForImage())
+			bPrint.setIconSclass("z-icon-Print");
+		else
+			bPrint.setImage(ThemeManager.getThemeResource("images/Print16.png"));
+		bPrint.setVisible(false);
 
 		// 轉發按鈕：預設隱藏，僅驗收調撥單顯示（隱藏確定鈕後仍可轉發）
 		bForward.setLabel(Msg.getMsg(Env.getCtx(), "Forward"));
@@ -452,6 +465,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		hboxAnswer.appendChild(bApprovalForm);
 		hboxAnswer.appendChild(new Separator("vertical"));
 		hboxAnswer.appendChild(bAcceptance);
+		hboxAnswer.appendChild(new Separator("vertical"));
+		hboxAnswer.appendChild(bPrint);
 		rowAction1.appendChild(hboxAnswer);
 		rowAction1.appendChild(new Label());
 		rowsAction.appendChild(rowAction1);
@@ -563,6 +578,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				cmd_openApprovalForm();
 			} else if (comp == bAcceptance) {
 				cmd_openAcceptanceForm();
+			} else if (comp == bPrint) {
+				cmd_print();
 			} else if (comp == bForward) {
 				cmd_forward();
 			} else if (comp == fAnswerButton)
@@ -992,6 +1009,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		// 驗收按鈕預設隱藏，由 display() 視當前單據決定
 		bAcceptance.setVisible(false);
 		m_acceptanceFormID = 0;
+		// 列印按鈕預設隱藏，由 display() 視當前單據決定
+		bPrint.setVisible(false);
+		m_printProcessID = 0;
 		// 附件按鈕預設停用，由 display() 依附件數啟用
 		bAttachment.setLabel("附件");
 		bAttachment.setDisabled(true);
@@ -1115,6 +1135,11 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		// 驗收：當前單據為驗收調撥單（M_Movement 單別 1000100）且非會簽 node 時顯示（全員可用）；
 		// m_acceptanceFormID 已於上方（選人框判斷前）計算
 		bAcceptance.setVisible(m_acceptanceFormID > 0 && !isCountersignNode);
+
+		// 預覽：當前單據在 TABLE_SUPPORT_PRINT 白名單、且登入角色有預覽權限視窗的讀取權限時才顯示
+		// （唯讀預覽，不分節點皆可）
+		m_printProcessID = getPrintProcessID(m_activity.getAD_Table_ID());
+		bPrint.setVisible(m_printProcessID > 0 && hasPreviewWindowAccess());
 
 		// 會簽節點：會簽人只有同意/否決，隱藏整個轉發區（含轉發輸入欄與轉發鈕），
 		// 並把確定鈕搬到「附件」右邊（回覆列），避免它獨佔一列顯得突兀。
@@ -1429,6 +1454,62 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		}
 		return 0;
 	}
+
+	// ====================================================================
+	// 列印預覽（依 SysConfig 對應報表 Process）
+	// ====================================================================
+
+	/**
+	 * 由 SysConfig {@code TABLE_SUPPORT_PRINT}（格式 {@code TableName:AD_Process_ID}，逗號分隔）
+	 * 取指定單據對應的列印報表 Process ID；查無對應或設定空字串時回 0（＝不顯示列印鈕）。
+	 * 作法與 {@link #getSplitInfoWindowID(int)}、{@link #getApprovalFormID(int)} 一致。
+	 */
+	private int getPrintProcessID(int tableId) {
+		String csv = MSysConfig.getValue("TABLE_SUPPORT_PRINT", "");
+		if (csv == null || csv.trim().length() == 0)
+			return 0;
+		for (String pair : csv.split(",")) {
+			int sep = pair.lastIndexOf(":");
+			if (sep <= 0)
+				continue;
+			String tableName = pair.substring(0, sep).trim();
+			if (MTable.getTable_ID(tableName) != tableId)
+				continue;
+			try {
+				return Integer.parseInt(pair.substring(sep + 1).trim());
+			} catch (NumberFormatException e) {
+				log.warning("TABLE_SUPPORT_PRINT 設定的 AD_Process ID 非數字: " + pair);
+				return 0;
+			}
+		}
+		return 0;
+	}
+
+	/**
+	 * 預覽鈕權限：登入角色需有 {@link #PREVIEW_WINDOW_ID} 視窗的讀取權限。
+	 * {@code MRole.getWindowAccess} 回 null＝無權限（＝不顯示）；非 null（讀寫或唯讀）＝至少可讀。
+	 */
+	private boolean hasPreviewWindowAccess() {
+		MRole role = MRole.get(Env.getCtx(), Env.getAD_Role_ID(Env.getCtx()));
+		return role != null && role.getWindowAccess(PREVIEW_WINDOW_ID) != null;
+	}
+
+	/**
+	 * 列印預覽：以當前單據開對應報表 Process 的參數對話框（等同在單據上按 Print 並選擇參數）。
+	 * 使用者填完參數按「開始」後，掛在該 Process 的 JasperReport 會自動開報表檢視器預覽／列印。
+	 * autoStart=false 確保一定先顯示參數面板；Process 綁定 Table_ID + Record_ID＝當前待簽單據。
+	 */
+	private void cmd_print() {
+		if (m_activity == null || m_printProcessID <= 0)
+			return;
+		ProcessModalDialog dialog = new ProcessModalDialog(m_WindowNo, m_printProcessID,
+				m_activity.getAD_Table_ID(), m_activity.getRecord_ID(), false);
+		if (dialog.isValid()) {
+			dialog.setPage(this.getPage());
+			dialog.doHighlighted();
+			dialog.focus();
+		}
+	} // cmd_print
 
 	/**
 	 * 開啟當前單據對應的客製簽核總覽 Form：先把單據 Record_ID 塞進 context，客製 Form 於
