@@ -17,6 +17,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -28,6 +30,7 @@ import org.adempiere.webui.apps.ProcessModalDialog;
 import org.adempiere.webui.component.Button;
 import org.adempiere.webui.component.Grid;
 import org.adempiere.webui.component.Label;
+import org.adempiere.webui.component.ListHead;
 import org.adempiere.webui.component.ListHeader;
 import org.adempiere.webui.component.ListItem;
 import org.adempiere.webui.component.ListModelTable;
@@ -188,6 +191,25 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private ListModelTable model = null;
 	private WListbox listbox = new WListbox();
 
+	// 模糊搜尋＋欄位排序：
+	// m_allActivities / m_allRows 為自 DB 一次載入的「完整」待簽資料（未過濾、未排序），
+	// model 與 m_activities 則是套用搜尋/排序後的「視圖」。兩者順序必須一致，
+	// 否則清單選取列會對到錯誤的待辦（display()、cmd_batchApprove 皆以索引取 m_activities）。
+	private Textbox fSearch = new Textbox(); // 上方模糊搜尋輸入框
+	private String m_searchText = ""; // 目前搜尋關鍵字
+	private List<MWFActivity> m_allActivities = new ArrayList<MWFActivity>();
+	private List<List<Object>> m_allRows = new ArrayList<List<Object>>();
+	private int m_sortColumn = -1; // 目前排序欄索引（-1=未排序，維持 DB 原排序 Priority/Created）
+	private boolean m_sortAsc = true; // 排序方向（true=升冪）
+	// 清單欄位標題（與 m_allRows 每列的 6 個欄位一一對應）
+	private final String[] m_columnTitles = new String[] {
+			"代簽",
+			Msg.translate(Env.getCtx(), "AD_User_ID"),
+			Msg.translate(Env.getCtx(), "DocumentType"),
+			Msg.translate(Env.getCtx(), "AD_WF_Node_ID"),
+			Msg.translate(Env.getCtx(), "Description"),
+			Msg.translate(Env.getCtx(), "Summary") };
+
 	private final static String HISTORY_DIV_START_TAG = "<div style='min-height: 120px; max-height: 560px; overflow: auto; border: 1px solid #7F9DB9; padding: 8px;'>";
 
 	public WWFActivityTG() {
@@ -323,6 +345,17 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		Toolbar toolbar = new Toolbar();
 		toolbar.setHflex("1");
 		toolbar.setHeight("36px");
+
+		// 模糊搜尋：輸入即時過濾清單（不分欄位，任何欄位含關鍵字即保留）。placeholder 已說明用途，免標籤。
+		// 置於工具列最右側：ZK Toolbar 的內容區會吃掉 float:right（故版本號/程式名也擠在左邊），
+		// 改用絕對定位——.z-toolbar 本身是 position:relative，子元素 position:absolute; right 即可貼齊最右。
+		fSearch.setPlaceholder("輸入關鍵字模糊搜尋…");
+		ZKUpdateUtil.setWidth(fSearch, "220px");
+		fSearch.setInstant(true); // 每次按鍵即觸發 onChange，達成即時過濾
+		fSearch.setStyle("position: absolute; right: 16px; top: 50%; transform: translateY(-50%);");
+		fSearch.addEventListener(Events.ON_CHANGE, this);
+		toolbar.appendChild(fSearch);
+
 		// Version Label in Toolbar
 		Label lVersionToolbar = new Label(VERSION);
 		lVersionToolbar.setStyle("float: right; margin-top: 8px; margin-right: 10px; font-size: 10px; color: #888;");
@@ -336,6 +369,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 
 		Label space = new Label(" ");
 		toolbar.appendChild(space);
+
 		toolbar.appendChild(bRefresh);
 		toolbar.appendChild(bBatchApprove);
 
@@ -596,6 +630,12 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 					&& fTextMsg.getText().length() == 0)
 				Clients.showNotification(
 						Msg.translate(Env.getCtx(), "RejectReasons"), fTextMsg);
+		}
+		// 模糊搜尋：輸入變動即重建清單視圖（過濾＋套用目前排序）
+		else if (Events.ON_CHANGE.equals(eventName) && comp == fSearch) {
+			m_searchText = fSearch.getValue();
+			applyView();
+			display(-1);
 		} else {
 			super.onEvent(event);
 		}
@@ -653,9 +693,9 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		int MAX_ACTIVITIES_IN_LIST = MSysConfig.getIntValue(MSysConfig.MAX_ACTIVITIES_IN_LIST, 200,
 				Env.getAD_Client_ID(Env.getCtx()));
 
-		model = new ListModelTable();
-
-		ArrayList<MWFActivity> list = new ArrayList<MWFActivity>();
+		// 重新自 DB 載入：清空「完整」資料集，稍後由 applyView() 過濾/排序成視圖
+		m_allActivities.clear();
+		m_allRows.clear();
 		// 代簽：登入者目前可代簽的(請假中)主管集合 + 開放代簽的單據集合，供清單逐列標示用（查一次，避免每列打 DB）
 		Set<Integer> delegatedSupIds = getDelegatedSupervisorIDs();
 		Set<Integer> delegationTableIds = getDelegationTableIDs();
@@ -681,7 +721,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			rs = pstmt.executeQuery();
 			while (rs.next()) {
 				MWFActivity activity = new MWFActivity(Env.getCtx(), rs, null);
-				list.add(activity);
+				m_allActivities.add(activity);
 				List<Object> rowData = new ArrayList<Object>();
 
 				// 0. 代簽標示：待辦 owner 為登入者可代簽的(請假中)主管時，顯示「代 XXX 主管」
@@ -753,8 +793,8 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				else
 					rowData.add(activity.getSummary());
 
-				model.add(rowData);
-				if (list.size() > MAX_ACTIVITIES_IN_LIST && MAX_ACTIVITIES_IN_LIST > 0) {
+				m_allRows.add(rowData);
+				if (m_allActivities.size() > MAX_ACTIVITIES_IN_LIST && MAX_ACTIVITIES_IN_LIST > 0) {
 					log.warning("More then 200 Activities - ignored");
 					break;
 				}
@@ -766,41 +806,85 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			rs = null;
 			pstmt = null;
 		}
-		m_activities = new MWFActivity[list.size()];
-		list.toArray(m_activities);
+		// 依目前搜尋/排序條件，將完整資料集過濾/排序成清單視圖（建 model、m_activities、headers）
+		applyView();
 		//
 		if (log.isLoggable(Level.FINE))
 			log.fine("#" + m_activities.length
 					+ "(" + (System.currentTimeMillis() - start) + "ms)");
+
+		return m_activities.length;
+	} // loadActivities
+
+	/**
+	 * 依目前的搜尋關鍵字（{@link #m_searchText}）與排序欄位（{@link #m_sortColumn}/{@link #m_sortAsc}），
+	 * 把完整資料集（{@link #m_allActivities}/{@link #m_allRows}）過濾、排序後重建清單視圖：
+	 * {@link #model}（供 Listbox 呈現）與 {@link #m_activities}（供選取列取待辦）。
+	 * 兩者順序必須一一對應，否則選取/批次簽核會對到錯誤的待辦。
+	 * 此方法只整理「記憶體中的視圖」，不重新查 DB，故搜尋與排序皆為即時。
+	 */
+	private void applyView() {
+		// 1) 過濾：模糊搜尋（不分欄位，任一欄位含關鍵字即保留；大小寫不敏感）
+		String q = (m_searchText == null) ? "" : m_searchText.trim().toLowerCase();
+		List<Integer> idxList = new ArrayList<Integer>();
+		for (int i = 0; i < m_allRows.size(); i++) {
+			if (q.length() == 0 || rowMatches(m_allRows.get(i), q))
+				idxList.add(Integer.valueOf(i));
+		}
+
+		// 2) 排序：點欄名後依該欄文字排序；未指定（-1）則維持 DB 原排序（Priority/Created）
+		if (m_sortColumn >= 0) {
+			final int col = m_sortColumn;
+			final boolean asc = m_sortAsc;
+			Collections.sort(idxList, new Comparator<Integer>() {
+				@Override
+				public int compare(Integer a, Integer b) {
+					String va = cellText(m_allRows.get(a.intValue()), col);
+					String vb = cellText(m_allRows.get(b.intValue()), col);
+					int c = va.compareToIgnoreCase(vb);
+					return asc ? c : -c;
+				}
+			});
+		}
+
+		// 3) 依過濾/排序結果重建 model 與 m_activities（順序一致）
+		model = new ListModelTable();
+		MWFActivity[] acts = new MWFActivity[idxList.size()];
+		for (int n = 0; n < idxList.size(); n++) {
+			int i = idxList.get(n).intValue();
+			model.add(m_allRows.get(i));
+			acts[n] = m_allActivities.get(i);
+		}
+		m_activities = acts;
 		m_index = 0;
 
-		String[] columns = new String[] {
-				"代簽",
-				Msg.translate(Env.getCtx(), "AD_User_ID"),
-				Msg.translate(Env.getCtx(), "DocumentType"),
-				Msg.translate(Env.getCtx(), "AD_WF_Node_ID"),
-				Msg.translate(Env.getCtx(), "Description"),
-				Msg.translate(Env.getCtx(), "Summary") };
+		// 4) 欄位標題：在目前排序欄名後加箭頭指示（升▲／降▼）；
+		// 注意必須把含箭頭的字串同時傳給 renderer 建構子與 header.setLabel，
+		// 否則 WListItemRenderer.renderListHead 會以欄名覆寫回我們的 label（箭頭消失）。
+		String[] columns = new String[m_columnTitles.length];
+		for (int c = 0; c < m_columnTitles.length; c++) {
+			columns[c] = m_columnTitles[c]
+					+ (c == m_sortColumn ? (m_sortAsc ? "  ▲" : "  ▼") : "");
+		}
 
 		WListItemRenderer renderer = new WListItemRenderer(Arrays.asList(columns));
-		ListHeader header = new ListHeader();
-		ZKUpdateUtil.setWidth(header, null);
-		renderer.setListHeader(0, header);
-		header = new ListHeader();
-		ZKUpdateUtil.setWidth(header, null);
-		renderer.setListHeader(1, header);
-		header = new ListHeader();
-		ZKUpdateUtil.setWidth(header, null);
-		renderer.setListHeader(2, header);
-		header = new ListHeader();
-		ZKUpdateUtil.setWidth(header, null);
-		renderer.setListHeader(3, header);
-		header = new ListHeader();
-		ZKUpdateUtil.setWidth(header, null);
-		renderer.setListHeader(4, header);
-		header = new ListHeader();
-		ZKUpdateUtil.setWidth(header, null);
-		renderer.setListHeader(5, header);
+		for (int c = 0; c < columns.length; c++) {
+			// 自設 ListHeader（不走 renderer 內建 setSort("auto")）：內建排序會就地重排 model，
+			// 但 m_activities 不會跟著重排而失準；故改用自己的 onSortHeader 同步重建兩者。
+			ListHeader header = new ListHeader();
+			ZKUpdateUtil.setWidth(header, null);
+			header.setLabel(columns[c]);
+			header.setStyle("cursor: pointer;");
+			header.setTooltiptext("點欄名排序");
+			final int col = c;
+			header.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
+				@Override
+				public void onEvent(Event e) {
+					onSortHeader(col);
+				}
+			});
+			renderer.setListHeader(c, header);
+		}
 
 		renderer.addTableValueChangeListener(listbox);
 		model.setNoColumns(columns.length);
@@ -813,12 +897,48 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		listbox.setItemRenderer(renderer);
 		listbox.setMultiple(true);
 		listbox.setCheckmark(true);
+		// 強制重畫表頭以更新排序箭頭：WListbox.initialiseHeader() 會比對「新 renderer 的 header 標籤」
+		// 與「新 renderer 的欄位值」，兩者都含箭頭故恆相等 → 它判定無變化而直接 return，不重畫，
+		// 導致畫面仍停在舊表頭（箭頭不會跟著更新）。先清掉表頭子節點，repaint() 內的
+		// initialiseHeader() 才會改走「重新 renderListHead」分支，以含箭頭的新 header 繪製。
+		ListHead head = listbox.getListHead();
+		if (head != null)
+			head.getChildren().clear();
 		listbox.repaint();
 
 		listbox.setSizedByContent(false);
+	} // applyView
 
-		return m_activities.length;
-	} // loadActivities
+	/** 點欄名排序：同欄再點切換升降冪，換欄則改排該欄並預設升冪，之後重建視圖。 */
+	private void onSortHeader(int col) {
+		if (m_sortColumn == col)
+			m_sortAsc = !m_sortAsc;
+		else {
+			m_sortColumn = col;
+			m_sortAsc = true;
+		}
+		applyView();
+		display(-1);
+	}
+
+	/** 模糊搜尋比對：任一欄位字串（大小寫不敏感）含關鍵字即視為命中。 */
+	private boolean rowMatches(List<Object> row, String q) {
+		if (row == null)
+			return false;
+		for (Object o : row) {
+			if (o != null && o.toString().toLowerCase().contains(q))
+				return true;
+		}
+		return false;
+	}
+
+	/** 取某列指定欄位的文字（null 視為空字串），供排序比較用。 */
+	private String cellText(List<Object> row, int col) {
+		if (row == null || col < 0 || col >= row.size())
+			return "";
+		Object o = row.get(col);
+		return o == null ? "" : o.toString();
+	}
 
 	private String getDescription(MWFActivity activity) {
 		PO po = activity.getPO();
