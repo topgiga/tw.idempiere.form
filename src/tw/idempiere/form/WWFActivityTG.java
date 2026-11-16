@@ -202,13 +202,22 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	private int m_sortColumn = -1; // 目前排序欄索引（-1=未排序，維持 DB 原排序 Priority/Created）
 	private boolean m_sortAsc = true; // 排序方向（true=升冪）
 	// 清單欄位標題（與 m_allRows 每列的 6 個欄位一一對應）
+	private static final int COL_DELEGATE = 0; // 代簽欄（整批皆空時隱藏）
 	private final String[] m_columnTitles = new String[] {
 			"代簽",
 			Msg.translate(Env.getCtx(), "AD_User_ID"),
 			Msg.translate(Env.getCtx(), "DocumentType"),
-			Msg.translate(Env.getCtx(), "AD_WF_Node_ID"),
 			Msg.translate(Env.getCtx(), "Description"),
+			Msg.translate(Env.getCtx(), "AD_WF_Node_ID"),
 			Msg.translate(Env.getCtx(), "Summary") };
+	// 各欄寬度（ZK hflex）：min=依內容自動縮到最窄；數字=分配剩餘寬度的比例（描述給最多）
+	private final String[] m_columnHflex = new String[] {
+			"min", // 代簽
+			"min", // 使用者
+			"min", // 單據類型
+			"3",   // 描述
+			"1",   // 流程節點
+			"2" }; // 摘要
 
 	private final static String HISTORY_DIV_START_TAG = "<div style='min-height: 120px; max-height: 560px; overflow: auto; border: 1px solid #7F9DB9; padding: 8px;'>";
 
@@ -769,6 +778,11 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 					if (activity.getAD_User_ID() > 0 && activity.getAD_User() != null)
 						userName = activity.getAD_User().getName();
 				}
+				// 尾端補一個全形空白：勾選框與使用者同在第一格，hflex=min 算寬時未含勾選框，
+				// 選取列會把名字擠成兩行；多留一字寬即可維持一行。
+				// （用全形空白 U+3000 而非半形空白，因 HTML 會吃掉行尾的半形空白，等於沒加）
+				if (userName != null && userName.length() > 0)
+					userName = userName + "　";
 				rowData.add(userName);
 
 				// 2. Document Type
@@ -780,11 +794,11 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				}
 				rowData.add(docType);
 
-				// 3. Workflow Node
-				rowData.add(activity.getNodeName());
-
-				// 4. Description
+				// 3. Description（與流程節點對調，放前面並給較大寬度）
 				rowData.add(getDescription(activity));
+
+				// 4. Workflow Node
+				rowData.add(activity.getNodeName());
 
 				// 5. Summary
 				String docSummary = getSummary(activity);
@@ -847,43 +861,59 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			});
 		}
 
-		// 3) 依過濾/排序結果重建 model 與 m_activities（順序一致）
+		// 3) 決定要顯示的欄位（存 m_allRows 的欄索引）：代簽欄在整批待辦都為空時隱藏，
+		// 不佔欄寬。以完整資料集判斷（而非過濾後），避免打字搜尋時欄位忽隱忽現。
+		List<Integer> visibleCols = new ArrayList<Integer>();
+		for (int c = 0; c < m_columnTitles.length; c++) {
+			if (c == COL_DELEGATE && isColumnAllEmpty(c))
+				continue;
+			visibleCols.add(Integer.valueOf(c));
+		}
+
+		// 4) 依過濾/排序結果重建 model 與 m_activities（順序一致）；model 只放可見欄位
 		model = new ListModelTable();
 		MWFActivity[] acts = new MWFActivity[idxList.size()];
 		for (int n = 0; n < idxList.size(); n++) {
 			int i = idxList.get(n).intValue();
-			model.add(m_allRows.get(i));
+			List<Object> fullRow = m_allRows.get(i);
+			List<Object> viewRow = new ArrayList<Object>(visibleCols.size());
+			for (Integer c : visibleCols)
+				viewRow.add(c.intValue() < fullRow.size() ? fullRow.get(c.intValue()) : "");
+			model.add(viewRow);
 			acts[n] = m_allActivities.get(i);
 		}
 		m_activities = acts;
 		m_index = 0;
 
-		// 4) 欄位標題：在目前排序欄名後加箭頭指示（升▲／降▼）；
+		// 5) 欄位標題：在目前排序欄名後加箭頭指示（升▲／降▼）；
 		// 注意必須把含箭頭的字串同時傳給 renderer 建構子與 header.setLabel，
 		// 否則 WListItemRenderer.renderListHead 會以欄名覆寫回我們的 label（箭頭消失）。
-		String[] columns = new String[m_columnTitles.length];
-		for (int c = 0; c < m_columnTitles.length; c++) {
-			columns[c] = m_columnTitles[c]
+		String[] columns = new String[visibleCols.size()];
+		for (int v = 0; v < visibleCols.size(); v++) {
+			int c = visibleCols.get(v).intValue();
+			columns[v] = m_columnTitles[c]
 					+ (c == m_sortColumn ? (m_sortAsc ? "  ▲" : "  ▼") : "");
 		}
 
 		WListItemRenderer renderer = new WListItemRenderer(Arrays.asList(columns));
-		for (int c = 0; c < columns.length; c++) {
+		for (int v = 0; v < columns.length; v++) {
 			// 自設 ListHeader（不走 renderer 內建 setSort("auto")）：內建排序會就地重排 model，
 			// 但 m_activities 不會跟著重排而失準；故改用自己的 onSortHeader 同步重建兩者。
+			final int col = visibleCols.get(v).intValue(); // 對應 m_allRows 的欄索引（排序用）
 			ListHeader header = new ListHeader();
 			ZKUpdateUtil.setWidth(header, null);
-			header.setLabel(columns[c]);
+			// 寬度：使用者/單據類型/代簽依內容自動縮排(min)，描述/節點/摘要依比例分配剩餘寬度
+			ZKUpdateUtil.setHflex(header, m_columnHflex[col]);
+			header.setLabel(columns[v]);
 			header.setStyle("cursor: pointer;");
 			header.setTooltiptext("點欄名排序");
-			final int col = c;
 			header.addEventListener(Events.ON_CLICK, new EventListener<Event>() {
 				@Override
 				public void onEvent(Event e) {
 					onSortHeader(col);
 				}
 			});
-			renderer.setListHeader(c, header);
+			renderer.setListHeader(v, header);
 		}
 
 		renderer.addTableValueChangeListener(listbox);
@@ -930,6 +960,15 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				return true;
 		}
 		return false;
+	}
+
+	/** 完整資料集中，指定欄位是否每一列都是空字串（用來決定是否隱藏該欄）。 */
+	private boolean isColumnAllEmpty(int col) {
+		for (List<Object> row : m_allRows) {
+			if (cellText(row, col).trim().length() > 0)
+				return false;
+		}
+		return true;
 	}
 
 	/** 取某列指定欄位的文字（null 視為空字串），供排序比較用。 */
