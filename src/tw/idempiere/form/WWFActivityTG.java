@@ -673,7 +673,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			pstmt.setInt(3, AD_User_ID);
 			pstmt.setInt(4, AD_User_ID);
 			pstmt.setInt(5, AD_User_ID);
-			pstmt.setInt(6, AD_User_ID); // 代簽：代理人(登入者)
+			pstmt.setInt(6, AD_User_ID); // 代簽：登入者=代理人或上級主管
 			pstmt.setInt(7, AD_Client_ID);
 			rs = pstmt.executeQuery();
 			if (rs.next()) {
@@ -724,7 +724,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			pstmt.setInt(3, AD_User_ID);
 			pstmt.setInt(4, AD_User_ID);
 			pstmt.setInt(5, AD_User_ID);
-			pstmt.setInt(6, AD_User_ID); // 代簽：代理人(登入者)
+			pstmt.setInt(6, AD_User_ID); // 代簽：登入者=代理人或上級主管
 			pstmt.setInt(7, AD_Client_ID);
 
 			rs = pstmt.executeQuery();
@@ -1040,10 +1040,11 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 				/// * Manual Responsible */
 				+ " OR EXISTS (SELECT * FROM AD_WF_ActivityApprover r "
 				+ " WHERE a.AD_WF_Activity_ID=r.AD_WF_Activity_ID AND r.AD_User_ID=? AND r.isActive = 'Y')" // #5
-				// 代簽：待辦 owner 為請假中(已核准且涵蓋今天)主管，且登入者是其代理人
+				// 代簽：待辦 owner 為請假中(已核准且涵蓋今天)主管，且登入者是其代理人或其上級主管
 				+ " OR EXISTS (SELECT 1 FROM AD_User u"
 				+ " JOIN HR_AbsenceNote ab ON ab.AD_User_ID = u.AD_User_ID"
-				+ " WHERE u.AD_User_ID = a.AD_User_ID AND u.Substitute_User_ID = ?" // #6 代理人(登入者)
+				+ " WHERE u.AD_User_ID = a.AD_User_ID"
+				+ " AND ? IN (u.Substitute_User_ID, u.Supervisor_ID)" // #6 登入者=代理人 或 上級主管
 				+ " AND u.IsActive='Y' AND ab.DocStatus='CO'"
 				+ " AND current_date BETWEEN ab.DateAbsenceFrom::date AND ab.DateAbsenceTo::date"
 				+ " AND a.AD_Table_ID IN (" + delegationTableIDsCsv() + "))" // 限白名單單據
@@ -1052,7 +1053,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	}
 
 	/**
-	 * 代簽判定：若這張待辦的 owner 是「請假中(已核准且涵蓋今天)且設定登入者為代理人」的主管，
+	 * 代簽判定：若這張待辦的 owner 是「請假中(已核准且涵蓋今天)，且登入者為其代理人或上級主管」的主管，
 	 * 回傳該主管 AD_User_ID；否則回傳 0。供簽核留痕標註用。
 	 */
 	private int getDelegatedSupervisorID(MWFActivity activity) {
@@ -1066,7 +1067,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 			return 0;
 		String sql = "SELECT u.AD_User_ID FROM AD_User u"
 				+ " JOIN HR_AbsenceNote ab ON ab.AD_User_ID = u.AD_User_ID"
-				+ " WHERE u.AD_User_ID=? AND u.Substitute_User_ID=? AND u.IsActive='Y'"
+				+ " WHERE u.AD_User_ID=? AND ? IN (u.Substitute_User_ID, u.Supervisor_ID) AND u.IsActive='Y'"
 				+ " AND ab.DocStatus='CO'"
 				+ " AND current_date BETWEEN ab.DateAbsenceFrom::date AND ab.DateAbsenceTo::date";
 		int supId = DB.getSQLValue(null, sql, ownerID, meID);
@@ -1105,14 +1106,15 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 	}
 
 	/**
-	 * 登入者目前可代簽的主管集合：設定登入者為代理人(Substitute_User_ID)、且有涵蓋今天的已核准假單者。
+	 * 登入者目前可代簽的主管集合：設定登入者為代理人(Substitute_User_ID)或上級主管(Supervisor_ID)、
+	 * 且有涵蓋今天的已核准假單者。
 	 * 查一次供清單逐列比對，避免每列各打一次 DB。
 	 */
 	private Set<Integer> getDelegatedSupervisorIDs() {
 		int meID = Env.getAD_User_ID(Env.getCtx());
 		String sql = "SELECT DISTINCT u.AD_User_ID FROM AD_User u"
 				+ " JOIN HR_AbsenceNote ab ON ab.AD_User_ID = u.AD_User_ID"
-				+ " WHERE u.Substitute_User_ID=? AND u.IsActive='Y'"
+				+ " WHERE ? IN (u.Substitute_User_ID, u.Supervisor_ID) AND u.IsActive='Y'"
 				+ " AND ab.DocStatus='CO'"
 				+ " AND current_date BETWEEN ab.DateAbsenceFrom::date AND ab.DateAbsenceTo::date";
 		Set<Integer> ids = new HashSet<Integer>();
@@ -2055,7 +2057,7 @@ public class WWFActivityTG extends ADForm implements EventListener<Event> {
 		}
 		int AD_User_ID = Env.getAD_User_ID(Env.getCtx());
 		String textMsg = fTextMsg.getValue();
-		// 代簽留痕：請假主管的待辦由代理人(登入者)簽核時自動標註
+		// 代簽留痕：請假主管的待辦由代理人或上級主管(登入者)簽核時自動標註
 		textMsg = applyDelegateTag(m_activity, textMsg);
 		//
 		MWFNode node = m_activity.getNode();
